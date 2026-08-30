@@ -38,7 +38,7 @@ const RECOGNITION_WATCHDOG_MS = 20000;
 // Bumped by hand whenever app.js changes in a way a tester needs to confirm reached
 // their device. GitHub Pages + iOS Safari cache aggressively enough that "did the new
 // code actually load?" is otherwise unanswerable from a phone.
-const BUILD_STAMP = 'build 2026-08-30 diag-2';
+const BUILD_STAMP = 'build 2026-08-30 diag-3';
 // A recognition session ending sooner than this without any result is treated as a
 // failure to start rather than a silence, so we stop retrying and surface the error.
 const FAILED_SESSION_MS = 1500;
@@ -557,8 +557,15 @@ function startApp() {
         showToast('Microphone access denied — check this site’s microphone permission in your browser settings.');
       } else if (event.error === 'service-not-allowed') {
         isSpeakingActive = false;
-        // On iOS this fires when Dictation is off system-wide, even if mic permission is granted.
-        showToast('Speech recognition service blocked — on iPhone/iPad check Settings → General → Keyboard → Enable Dictation.');
+        // WebKit reports several distinct conditions through this one code (see
+        // bugs.webkit.org/show_bug.cgi?id=225298): Dictation/Siri disabled system-wide,
+        // running as a Home Screen web app or in an in-app browser, and — because
+        // SFSpeechRecognizer(locale:) returns nil for locales Apple doesn't support —
+        // an unsupported language. So name the likely causes rather than just one.
+        showToast(
+          `Speech unavailable on this device for ${langName(langCode)}. On iPhone/iPad: enable Settings → General → Keyboard → Dictation, try another language (Apple supports fewer than Chrome), and open the link in Safari itself rather than a Home Screen icon or in-app browser.`,
+          9000
+        );
       } else if (event.error === 'language-not-supported') {
         isSpeakingActive = false;
         // Apple's recognizer supports far fewer locales than Google's, so a language
