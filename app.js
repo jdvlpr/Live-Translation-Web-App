@@ -304,24 +304,51 @@ function startApp() {
     };
   }
 
-  function claimSpeaker() {
-    stateRef
-      .transaction((current) => {
-        if (current && current.isLive) return; // abort: someone already live
-        return { isLive: true, speakerId: clientId, updatedAt: firebase.database.ServerValue.TIMESTAMP };
+  function requestMicPermission() {
+    // iOS/Safari (and WebKit generally) will only show the mic permission prompt
+    // when the request happens synchronously within a user gesture. The actual
+    // recognizer.start() call below happens later, inside a Firebase 'value'
+    // callback, which no longer counts as a user gesture — so we grab (and
+    // immediately release) the mic here, right in the click handler, to get the
+    // permission prompt to appear. getUserMedia and SpeechRecognition share the
+    // same underlying microphone permission, so recognizer.start() succeeds
+    // silently afterward.
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return Promise.resolve(true); // let SpeechRecognition itself report unsupported/denied later
+    }
+    return navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        stream.getTracks().forEach((track) => track.stop());
+        return true;
       })
-      .then(({ committed }) => {
-        if (!committed) {
-          showToast('Someone else just started speaking — joining as a listener.');
-          return;
-        }
-        // Router's `on('value')` subscription will detect speakerId === clientId
-        // and switch to the speaker view; nothing else to do here.
-      })
-      .catch((err) => {
-        console.error(err);
-        showToast('Could not start the room. Check your Firebase config.');
+      .catch(() => {
+        showToast('Microphone access denied — allow it in your browser/device settings to speak.');
+        return false;
       });
+  }
+
+  function claimSpeaker() {
+    requestMicPermission().then((granted) => {
+      if (!granted) return;
+      stateRef
+        .transaction((current) => {
+          if (current && current.isLive) return; // abort: someone already live
+          return { isLive: true, speakerId: clientId, updatedAt: firebase.database.ServerValue.TIMESTAMP };
+        })
+        .then(({ committed }) => {
+          if (!committed) {
+            showToast('Someone else just started speaking — joining as a listener.');
+            return;
+          }
+          // Router's `on('value')` subscription will detect speakerId === clientId
+          // and switch to the speaker view; nothing else to do here.
+        })
+        .catch((err) => {
+          console.error(err);
+          showToast('Could not start the room. Check your Firebase config.');
+        });
+    });
   }
 
   /* ----- Speaker view ----- */
