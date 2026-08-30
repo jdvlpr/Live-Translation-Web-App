@@ -579,7 +579,7 @@ function startApp() {
   let feedGeneration = 0;
   let currentTranscriptHandler = null;
   const activeTranslationListeners = new Map(); // transcriptKey -> { ref, handler }
-  const entryElements = new Map(); // transcriptKey -> { wrapEl, originalEl, translatedEl, sameLang }
+  const entryElements = new Map(); // transcriptKey -> { wrapEl, originalCol, translatedCol, translatedEl, sameLang }
 
   // Wraps handleTranscriptChildAdded so any child_added events still in flight from a
   // subscription we just tore down (e.g. mid target-language switch) get dropped instead
@@ -689,26 +689,46 @@ function startApp() {
     wrap.className = 'bg-white border border-slate-200 rounded-lg px-3 py-2';
 
     const meta = document.createElement('div');
-    meta.className = 'text-[11px] text-slate-400 mb-0.5';
+    meta.className = 'text-[11px] text-slate-400 mb-1';
     meta.textContent = new Date(data.timestamp || Date.now()).toLocaleTimeString();
 
-    const originalEl = document.createElement('p');
-    originalEl.className = 'text-slate-500 text-sm italic';
-    originalEl.textContent = data.originalText;
+    const row = document.createElement('div');
+    row.className = 'flex gap-3';
 
+    const originalCol = document.createElement('div');
+    originalCol.className = 'flex-1 min-w-0';
+    const originalLabel = document.createElement('div');
+    originalLabel.className = 'text-[10px] uppercase tracking-wide text-slate-400 mb-0.5';
+    originalLabel.textContent = langName(data.sourceLang);
+    const originalEl = document.createElement('p');
+    originalEl.className = 'text-slate-500 text-sm italic break-words';
+    originalEl.textContent = data.originalText;
+    originalCol.appendChild(originalLabel);
+    originalCol.appendChild(originalEl);
+
+    const translatedCol = document.createElement('div');
+    translatedCol.className = 'flex-1 min-w-0';
+    const translatedLabel = document.createElement('div');
+    translatedLabel.className = 'text-[10px] uppercase tracking-wide text-slate-400 mb-0.5';
+    translatedLabel.textContent = langName(targetLang);
     const translatedEl = document.createElement('p');
-    translatedEl.className = 'text-slate-900 text-base';
+    translatedEl.className = 'text-slate-900 text-base break-words';
     translatedEl.textContent = sameLang ? data.originalText : '…';
+    if (!sameLang) translatedEl.classList.add('animate-pulse');
+    translatedCol.appendChild(translatedLabel);
+    translatedCol.appendChild(translatedEl);
+
+    row.appendChild(originalCol);
+    row.appendChild(translatedCol);
 
     wrap.appendChild(meta);
-    wrap.appendChild(originalEl);
-    wrap.appendChild(translatedEl);
+    wrap.appendChild(row);
 
     const feedEl = document.getElementById('listener-feed');
     feedEl.appendChild(wrap);
     if (stickToBottom) feedEl.scrollTop = feedEl.scrollHeight;
 
-    const entry = { wrapEl: wrap, originalEl, translatedEl, sameLang };
+    const entry = { wrapEl: wrap, originalCol, translatedCol, translatedEl, sameLang };
     entryElements.set(key, entry);
     applyDisplayMode(entry);
 
@@ -719,12 +739,17 @@ function startApp() {
 
   function applyDisplayMode(entry) {
     if (entry.sameLang) {
-      entry.originalEl.classList.add('hidden');
-      entry.translatedEl.classList.remove('hidden');
+      entry.originalCol.classList.add('hidden');
+      entry.translatedCol.classList.remove('hidden', 'border-l', 'border-slate-100', 'pl-3');
       return;
     }
-    entry.originalEl.classList.toggle('hidden', displayMode === 'translated');
-    entry.translatedEl.classList.toggle('hidden', displayMode === 'original');
+    const dual = displayMode === 'dual';
+    entry.originalCol.classList.toggle('hidden', displayMode === 'translated');
+    entry.translatedCol.classList.toggle('hidden', displayMode === 'original');
+    // Only show the divider between columns when both are visible side by side.
+    entry.translatedCol.classList.toggle('border-l', dual);
+    entry.translatedCol.classList.toggle('border-slate-100', dual);
+    entry.translatedCol.classList.toggle('pl-3', dual);
   }
 
   function rebuildFeedForNewTargetLang() {
@@ -745,6 +770,7 @@ function startApp() {
       const val = snap.val();
       if (typeof val === 'string') {
         translatedEl.textContent = val;
+        translatedEl.classList.remove('animate-pulse');
         return;
       }
       if (val && val.status === 'pending') {
@@ -784,6 +810,7 @@ function startApp() {
             .catch((err) => {
               console.error('translation failed', err);
               translatedEl.textContent = originalText; // local fallback so this listener isn't stuck on "…"
+              translatedEl.classList.remove('animate-pulse');
               // Back-date the pending marker instead of clearing it, so a persistent failure
               // (e.g. bad API key) waits for the staleness window before any retry, rather
               // than this same listener re-claiming and re-failing in a tight loop.
