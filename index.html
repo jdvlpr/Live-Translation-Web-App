@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Live Translate</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .scrollbar-thin::-webkit-scrollbar { width: 6px; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+    @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+    .live-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+  </style>
+</head>
+<body class="h-full bg-slate-50 text-slate-900 antialiased">
+  <div class="h-full flex flex-col">
+    <header class="flex items-center justify-between px-4 py-3 bg-white border-b border-slate-200 sticky top-0 z-20">
+      <div class="flex items-center gap-2">
+        <span class="text-xl">🌐</span>
+        <h1 class="font-semibold text-lg">Live Translate</h1>
+      </div>
+      <button id="btn-open-settings" class="p-2 rounded-full hover:bg-slate-100" title="Settings" aria-label="Settings">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+    </header>
+
+    <main class="flex-1 flex flex-col min-h-0">
+      <section id="view-loading" class="hidden flex-1">
+        <div class="h-full flex items-center justify-center">
+          <p class="text-slate-500 text-sm">Connecting…</p>
+        </div>
+      </section>
+
+      <section id="view-config-required" class="hidden flex-1">
+        <div class="h-full flex flex-col items-center justify-center gap-4 p-6 text-center">
+          <p class="text-3xl">🔧</p>
+          <p class="text-slate-600 max-w-sm">Add your Firebase config and Gemini API key to get started. Everything is stored only in this browser.</p>
+          <button id="btn-config-open-settings" class="px-4 py-2 rounded-lg bg-indigo-600 text-white font-medium hover:bg-indigo-700">Open Settings</button>
+        </div>
+      </section>
+
+      <section id="view-chooser" class="hidden flex-1">
+        <div class="h-full flex flex-col items-center justify-center gap-6 p-6 overflow-y-auto scrollbar-thin">
+          <div class="text-center">
+            <p class="text-sm text-slate-500">Room</p>
+            <p id="chooser-room-id" class="text-2xl font-mono font-semibold tracking-wide"></p>
+          </div>
+
+          <div id="chooser-waiting-banner" class="hidden text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-sm">
+            Waiting for the speaker to start…
+          </div>
+
+          <div class="flex flex-col sm:flex-row gap-4 w-full max-w-md">
+            <button id="btn-start-speaker" class="flex-1 px-6 py-4 rounded-xl bg-indigo-600 text-white font-semibold text-lg shadow hover:bg-indigo-700">
+              🎙️ Start as Speaker
+            </button>
+            <button id="btn-join-listener" class="flex-1 px-6 py-4 rounded-xl bg-white border-2 border-indigo-600 text-indigo-600 font-semibold text-lg hover:bg-indigo-50">
+              🎧 Join as Listener
+            </button>
+          </div>
+
+          <div class="w-full max-w-md bg-white border border-slate-200 rounded-xl p-4 flex flex-col items-center gap-3">
+            <p class="text-sm text-slate-500">Share this room</p>
+            <div id="chooser-qrcode" role="img" aria-label="QR code linking to this room"></div>
+            <div class="flex w-full gap-2">
+              <input id="chooser-share-link" type="text" readonly class="flex-1 min-w-0 text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50" />
+              <button id="btn-copy-link" data-target="chooser-share-link" class="btn-copy-link px-3 py-1.5 text-sm rounded-lg bg-slate-100 hover:bg-slate-200 shrink-0">Copy</button>
+            </div>
+            <label class="flex items-start gap-2 text-xs text-slate-500 w-full text-left">
+              <input type="checkbox" id="chooser-include-creds" class="mt-0.5" />
+              <span>Include my Firebase/Gemini credentials in this link &amp; QR, so people who open it don't need to enter Settings. Only do this with a QR you control who sees.</span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-speaker" class="hidden flex-1">
+        <div class="h-full flex flex-col">
+          <div class="flex flex-wrap items-center gap-3 px-4 py-3 bg-white border-b border-slate-200">
+            <span class="flex items-center gap-1.5 text-sm font-medium text-emerald-600">
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 live-dot"></span> LIVE
+            </span>
+            <label class="text-sm text-slate-500 ml-1">Speaking in
+              <select id="speaker-lang-select" class="ml-1 border border-slate-200 rounded-lg px-2 py-1 text-sm"></select>
+            </label>
+            <div class="flex-1"></div>
+            <button id="btn-toggle-share" class="text-sm text-indigo-600 hover:underline">Share link</button>
+            <button id="btn-close-room" class="px-3 py-1.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700">Close Room</button>
+          </div>
+
+          <div id="speaker-share-panel" class="hidden border-b border-slate-200 bg-white">
+            <div class="flex flex-col items-center gap-3 p-4">
+              <div id="speaker-qrcode" role="img" aria-label="QR code linking to this room"></div>
+              <div class="flex w-full max-w-md gap-2">
+                <input id="speaker-share-link" type="text" readonly class="flex-1 min-w-0 text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50" />
+                <button data-target="speaker-share-link" class="btn-copy-link px-3 py-1.5 text-sm rounded-lg bg-slate-100 hover:bg-slate-200 shrink-0">Copy</button>
+              </div>
+              <label class="flex items-start gap-2 text-xs text-slate-500 w-full max-w-md text-left">
+                <input type="checkbox" id="speaker-include-creds" class="mt-0.5" />
+                <span>Include my Firebase/Gemini credentials in this link &amp; QR, so people who open it don't need to enter Settings. Only do this with a QR you control who sees.</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="flex-1 overflow-y-auto p-4 scrollbar-thin space-y-2" id="speaker-captions">
+            <p class="text-slate-400 text-sm" id="speaker-empty-hint">Start talking — your speech will appear here and be sent to listeners.</p>
+          </div>
+          <div class="px-4 py-3 border-t border-slate-200 bg-white text-sm text-slate-400 italic min-h-[2.75rem]" id="speaker-interim"></div>
+        </div>
+      </section>
+
+      <section id="view-listener" class="hidden flex-1">
+        <div class="h-full flex flex-col">
+          <div class="flex flex-wrap items-center gap-3 px-4 py-3 bg-white border-b border-slate-200">
+            <label class="text-sm text-slate-500">Show in
+              <select id="listener-lang-select" class="ml-1 border border-slate-200 rounded-lg px-2 py-1 text-sm"></select>
+            </label>
+            <div class="flex-1"></div>
+            <div class="inline-flex rounded-lg border border-slate-200 overflow-hidden text-sm" id="listener-display-toggle">
+              <button type="button" data-mode="translated" class="px-3 py-1.5">Translated</button>
+              <button type="button" data-mode="original" class="px-3 py-1.5">Original</button>
+              <button type="button" data-mode="dual" class="px-3 py-1.5">Dual</button>
+            </div>
+            <button id="btn-leave-room" class="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-sm text-slate-600 shrink-0" title="Leave this room">Leave</button>
+          </div>
+
+          <div id="listener-waiting-banner" class="hidden bg-amber-50 border-b border-amber-200 text-amber-700 text-sm px-4 py-2 text-center">
+            Waiting for the speaker to start…
+          </div>
+
+          <div id="listener-feed" class="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-thin"></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="hidden fixed bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm shadow-lg z-50 max-w-[90vw] text-center"></div>
+  </div>
+
+  <div id="modal-settings" class="hidden fixed inset-0 bg-black/50 z-50">
+    <div class="w-full h-full flex items-center justify-center p-4">
+      <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-6 max-h-[90vh] overflow-y-auto">
+        <h2 class="text-lg font-semibold mb-1">Settings</h2>
+        <p class="text-sm text-slate-500 mb-4">Stored only in this browser's local storage. Sent only to Firebase and Google when needed.</p>
+
+        <label class="block text-sm font-medium text-slate-700 mb-1">Firebase config (JSON)</label>
+        <textarea id="input-firebase-config" rows="6" placeholder='{"apiKey":"...","authDomain":"...","databaseURL":"...","projectId":"..."}' class="w-full text-xs font-mono border border-slate-200 rounded-lg p-2 mb-1"></textarea>
+        <p class="text-xs text-slate-400 mb-4">Paste the config object from your Firebase project settings. Must include <code>databaseURL</code> (Realtime Database, not Firestore).</p>
+
+        <label class="block text-sm font-medium text-slate-700 mb-1">Gemini API key</label>
+        <input id="input-gemini-key" type="password" placeholder="AIza…" autocomplete="off" class="w-full text-sm border border-slate-200 rounded-lg p-2 mb-1" />
+        <p class="text-xs text-slate-400 mb-4">From Google AI Studio. Called directly from the browser to translate text — every listener can see this key in devtools, so use a key you're comfortable exposing client-side.</p>
+
+        <p id="settings-error" class="hidden text-sm text-red-600 mb-3"></p>
+
+        <div class="flex justify-end gap-2">
+          <button id="btn-settings-cancel" class="hidden px-4 py-2 rounded-lg text-slate-600 hover:bg-slate-100">Cancel</button>
+          <button id="btn-settings-save" class="px-4 py-2 rounded-lg bg-indigo-600 text-white font-medium hover:bg-indigo-700">Save &amp; Reload</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js" integrity="sha384-+65NgAKqXr1Nb7sBmV6O09pL8ASqZsi29OE718meKinGAWaa70VE5V6LNjXVBjIA" crossorigin="anonymous"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-database-compat.js" integrity="sha384-g5H2aNdtgRBYOBLsuOAuHvUXWnw4bswmU+tYjmGc1G3JfKxl79uWwV4sQarJsLwu" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/davidshimjs-qrcodejs@0.0.2/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous"></script>
+  <script src="app.js"></script>
+</body>
+</html>
