@@ -29,6 +29,16 @@ const PAUSE_MS = 3500;
 const SENTENCE_END_RE = /[.!?…]["')\]]?\s*$/;
 const STALE_PENDING_MS = 8000;
 const GEMINI_MODEL = 'gemini-3.5-flash-lite';
+// iOS Safari's continuous SpeechRecognition can silently stop delivering onresult
+// without ever firing onend/onerror, so the normal restart-on-end logic never
+// kicks in. This watchdog force-restarts if nothing comes through for too long.
+// Scoped to iOS since Chrome/desktop don't exhibit this failure mode.
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent);
+const RECOGNITION_WATCHDOG_MS = 20000;
+// A recognition session ending sooner than this without any result is treated as a
+// failure to start rather than a silence, so we stop retrying and surface the error.
+const FAILED_SESSION_MS = 1500;
+const MAX_FAILED_RESTARTS = 8;
 
 function langName(code) {
   const lang = LANGUAGES.find((l) => l.code === code);
@@ -357,6 +367,9 @@ function startApp() {
   let isSpeakingActive = false;
   let restartTimer = null;
   let pauseTimer = null;
+  let watchdogTimer = null;
+  let failedRestarts = 0;
+  let sessionStartedAt = 0;
   let finalBuffer = '';
   let currentSourceLang = LANGUAGES[0].code; // bs-BA default
   let wakeLock = null;
@@ -452,6 +465,8 @@ function startApp() {
     recognizer.interimResults = true;
 
     recognizer.onresult = (event) => {
+      armWatchdog();
+      failedRestarts = 0; // proof the pipeline works; don't count earlier stumbles against it
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const piece = event.results[i][0].transcript;
@@ -467,6 +482,10 @@ function startApp() {
     };
 
     recognizer.onerror = (event) => {
+      // Always log verbatim: several error codes (notably 'language-not-supported')
+      // used to fall through silently into onend's restart loop, which made a fatal
+      // error look identical to "nothing is happening".
+      console.error('speech recognition error:', event.error, event);
       if (event.error === 'not-allowed') {
         isSpeakingActive = false;
         showToast('Microphone access denied — check this site’s microphone permission in your browser settings.');
@@ -474,40 +493,92 @@ function startApp() {
         isSpeakingActive = false;
         // On iOS this fires when Dictation is off system-wide, even if mic permission is granted.
         showToast('Speech recognition service blocked — on iPhone/iPad check Settings → General → Keyboard → Enable Dictation.');
+      } else if (event.error === 'language-not-supported') {
+        isSpeakingActive = false;
+        // Apple's recognizer supports far fewer locales than Google's, so a language
+        // that works in desktop Chrome can be fatal on iOS.
+        showToast(`“${langName(langCode)}” isn’t supported for speech on this device — pick another language.`, 6000);
+      } else if (event.error === 'audio-capture') {
+        isSpeakingActive = false;
+        showToast('No microphone available — check that nothing else is using it.');
       }
-      // Other errors (e.g. 'no-speech', 'network') are recovered by onend's restart.
+      // Remaining errors ('no-speech', 'network', 'aborted') are transient and
+      // recovered by onend's restart.
     };
 
     recognizer.onend = () => {
-      if (isSpeakingActive) {
-        restartTimer = setTimeout(() => {
-          if (isSpeakingActive) {
-            try {
-              recognizer.start();
-            } catch (err) {
-              console.error('restart failed', err);
-            }
-          }
-        }, 250);
+      if (!isSpeakingActive) return;
+      // A session that ends almost immediately without ever producing a result is a
+      // failure, not a silence — restarting it forever just hides the real error.
+      // A genuine quiet stretch still runs for a while before ending, so it doesn't
+      // trip this counter.
+      if (Date.now() - sessionStartedAt < FAILED_SESSION_MS) {
+        failedRestarts++;
+        if (failedRestarts >= MAX_FAILED_RESTARTS) {
+          isSpeakingActive = false;
+          console.error('speech recognition: giving up after', failedRestarts, 'immediate failed restarts');
+          showToast('Speech recognition keeps failing to start on this device — try a different language, or Chrome on desktop.', 6000);
+          return;
+        }
+      } else {
+        failedRestarts = 0;
       }
+      restartTimer = setTimeout(() => {
+        if (isSpeakingActive) {
+          try {
+            recognizer.start();
+            sessionStartedAt = Date.now();
+            armWatchdog();
+          } catch (err) {
+            console.error('restart failed', err);
+          }
+        }
+      }, 250);
     };
 
+    // Lifecycle logging: on iOS these are often the only way to tell "never started"
+    // apart from "started but heard nothing".
+    recognizer.onstart = () => console.info('speech recognition: started', langCode);
+    recognizer.onaudiostart = () => console.info('speech recognition: audio capture started');
+    recognizer.onspeechstart = () => console.info('speech recognition: speech detected');
+
     isSpeakingActive = true;
+    failedRestarts = 0;
     try {
       recognizer.start();
+      sessionStartedAt = Date.now();
+      armWatchdog();
     } catch (err) {
-      console.error(err);
+      console.error('speech recognition: start() threw', err);
     }
     acquireWakeLock();
   }
 
+  function armWatchdog() {
+    if (!IS_IOS) return;
+    clearTimeout(watchdogTimer);
+    watchdogTimer = setTimeout(() => {
+      if (!isSpeakingActive || !recognizer) return;
+      console.warn('speech recognition watchdog: no results in', RECOGNITION_WATCHDOG_MS, 'ms — forcing restart');
+      try {
+        recognizer.stop(); // triggers onend, which already handles restarting
+      } catch {
+        /* already stopped */
+      }
+    }, RECOGNITION_WATCHDOG_MS);
+  }
+
   function stopRecognitionInternal() {
     clearTimeout(restartTimer);
+    clearTimeout(watchdogTimer);
     if (recognizer) {
       const r = recognizer;
       r.onend = null;
       r.onerror = null;
       r.onresult = null;
+      r.onstart = null;
+      r.onaudiostart = null;
+      r.onspeechstart = null;
       try {
         r.stop();
       } catch {
