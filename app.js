@@ -412,22 +412,47 @@ function startApp() {
       document.getElementById('speaker-share-panel').classList.toggle('hidden');
     };
 
-    document.getElementById('debug-build-stamp').textContent = BUILD_STAMP;
-    document.getElementById('btn-toggle-debug').onclick = () => {
-      document.getElementById('speaker-debug-panel').classList.toggle('hidden');
-      document.getElementById('speaker-debug-log').textContent = debugLines.join('\n');
-    };
-    document.getElementById('btn-clear-debug').onclick = () => {
-      debugLines.length = 0;
-      document.getElementById('speaker-debug-log').textContent = '';
-    };
-    document.getElementById('btn-copy-debug').onclick = () => {
-      const text = `${BUILD_STAMP}\n${navigator.userAgent}\n\n${debugLines.join('\n')}`;
-      navigator.clipboard?.writeText(text).then(
-        () => showToast('Debug log copied.'),
-        () => showToast('Could not copy — select the text manually.')
-      );
-    };
+    // Defensive: a device can hold cached index.html while loading fresh app.js, so
+    // these elements may not exist. Letting that throw here would abort the rest of
+    // renderSpeakerView — including startRecognition() below — and the resulting
+    // silence would look exactly like the recognition bug this panel exists to find.
+    try {
+      const stamp = document.getElementById('debug-build-stamp');
+      if (stamp) stamp.textContent = BUILD_STAMP;
+      const toggleBtn = document.getElementById('btn-toggle-debug');
+      if (!toggleBtn) {
+        // No Debug button in the DOM means this device is running an older index.html
+        // than app.js — say so, rather than letting it masquerade as a mic failure.
+        showToast('Stale page cached — close this tab entirely and reopen the link to get the current version.', 8000);
+      }
+      if (toggleBtn) {
+        toggleBtn.onclick = () => {
+          document.getElementById('speaker-debug-panel')?.classList.toggle('hidden');
+          const log = document.getElementById('speaker-debug-log');
+          if (log) log.textContent = debugLines.join('\n');
+        };
+      }
+      const clearBtn = document.getElementById('btn-clear-debug');
+      if (clearBtn) {
+        clearBtn.onclick = () => {
+          debugLines.length = 0;
+          const log = document.getElementById('speaker-debug-log');
+          if (log) log.textContent = '';
+        };
+      }
+      const copyBtn = document.getElementById('btn-copy-debug');
+      if (copyBtn) {
+        copyBtn.onclick = () => {
+          const text = `${BUILD_STAMP}\n${navigator.userAgent}\n\n${debugLines.join('\n')}`;
+          navigator.clipboard?.writeText(text).then(
+            () => showToast('Debug log copied.'),
+            () => showToast('Could not copy — select the text manually.')
+          );
+        };
+      }
+    } catch (err) {
+      console.error('debug panel wiring failed', err);
+    }
 
     debugLog(`speaker view ready — ${BUILD_STAMP}`);
     debugLog(`iOS=${IS_IOS} ctor=${getSpeechRecognitionCtor() ? 'present' : 'MISSING'}`);
