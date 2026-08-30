@@ -35,6 +35,10 @@ const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 // Scoped to iOS since Chrome/desktop don't exhibit this failure mode.
 const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent);
 const RECOGNITION_WATCHDOG_MS = 20000;
+// Bumped by hand whenever app.js changes in a way a tester needs to confirm reached
+// their device. GitHub Pages + iOS Safari cache aggressively enough that "did the new
+// code actually load?" is otherwise unanswerable from a phone.
+const BUILD_STAMP = 'build 2026-08-30 diag-2';
 // A recognition session ending sooner than this without any result is treated as a
 // failure to start rather than a silence, so we stop retrying and surface the error.
 const FAILED_SESSION_MS = 1500;
@@ -408,6 +412,26 @@ function startApp() {
       document.getElementById('speaker-share-panel').classList.toggle('hidden');
     };
 
+    document.getElementById('debug-build-stamp').textContent = BUILD_STAMP;
+    document.getElementById('btn-toggle-debug').onclick = () => {
+      document.getElementById('speaker-debug-panel').classList.toggle('hidden');
+      document.getElementById('speaker-debug-log').textContent = debugLines.join('\n');
+    };
+    document.getElementById('btn-clear-debug').onclick = () => {
+      debugLines.length = 0;
+      document.getElementById('speaker-debug-log').textContent = '';
+    };
+    document.getElementById('btn-copy-debug').onclick = () => {
+      const text = `${BUILD_STAMP}\n${navigator.userAgent}\n\n${debugLines.join('\n')}`;
+      navigator.clipboard?.writeText(text).then(
+        () => showToast('Debug log copied.'),
+        () => showToast('Could not copy — select the text manually.')
+      );
+    };
+
+    debugLog(`speaker view ready — ${BUILD_STAMP}`);
+    debugLog(`iOS=${IS_IOS} ctor=${getSpeechRecognitionCtor() ? 'present' : 'MISSING'}`);
+
     document.getElementById('btn-close-room').onclick = closeRoom;
 
     // Re-arm the onDisconnect cleanup every time our connection (re)establishes,
@@ -447,6 +471,21 @@ function startApp() {
     if (isSpeakingActive) startRecognition(newLang);
   }
 
+  const debugLines = [];
+
+  function debugLog(message) {
+    const stamp = new Date().toISOString().slice(11, 23);
+    const line = `${stamp}  ${message}`;
+    debugLines.push(line);
+    if (debugLines.length > 200) debugLines.shift();
+    console.info('[rtt]', line);
+    const el = document.getElementById('speaker-debug-log');
+    if (el) {
+      el.textContent = debugLines.join('\n');
+      el.scrollTop = el.scrollHeight;
+    }
+  }
+
   function getSpeechRecognitionCtor() {
     return window.SpeechRecognition || window.webkitSpeechRecognition;
   }
@@ -466,6 +505,8 @@ function startApp() {
 
     recognizer.onresult = (event) => {
       armWatchdog();
+      if (failedRestarts) debugLog('onresult — recovered');
+      else if (!debugLines.some((l) => l.includes('onresult'))) debugLog('onresult — FIRST RESULT received');
       failedRestarts = 0; // proof the pipeline works; don't count earlier stumbles against it
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -485,7 +526,7 @@ function startApp() {
       // Always log verbatim: several error codes (notably 'language-not-supported')
       // used to fall through silently into onend's restart loop, which made a fatal
       // error look identical to "nothing is happening".
-      console.error('speech recognition error:', event.error, event);
+      debugLog(`ONERROR: ${event.error}${event.message ? ' — ' + event.message : ''}`);
       if (event.error === 'not-allowed') {
         isSpeakingActive = false;
         showToast('Microphone access denied — check this site’s microphone permission in your browser settings.');
@@ -507,6 +548,7 @@ function startApp() {
     };
 
     recognizer.onend = () => {
+      debugLog(`onend — session lasted ${Date.now() - sessionStartedAt}ms, active=${isSpeakingActive}`);
       if (!isSpeakingActive) return;
       // A session that ends almost immediately without ever producing a result is a
       // failure, not a silence — restarting it forever just hides the real error.
@@ -516,7 +558,7 @@ function startApp() {
         failedRestarts++;
         if (failedRestarts >= MAX_FAILED_RESTARTS) {
           isSpeakingActive = false;
-          console.error('speech recognition: giving up after', failedRestarts, 'immediate failed restarts');
+          debugLog(`GIVING UP after ${failedRestarts} immediate failed restarts`);
           showToast('Speech recognition keeps failing to start on this device — try a different language, or Chrome on desktop.', 6000);
           return;
         }
@@ -538,18 +580,22 @@ function startApp() {
 
     // Lifecycle logging: on iOS these are often the only way to tell "never started"
     // apart from "started but heard nothing".
-    recognizer.onstart = () => console.info('speech recognition: started', langCode);
-    recognizer.onaudiostart = () => console.info('speech recognition: audio capture started');
-    recognizer.onspeechstart = () => console.info('speech recognition: speech detected');
+    recognizer.onstart = () => debugLog('onstart — session opened');
+    recognizer.onaudiostart = () => debugLog('onaudiostart — mic audio flowing');
+    recognizer.onspeechstart = () => debugLog('onspeechstart — speech detected');
+    recognizer.onaudioend = () => debugLog('onaudioend — mic audio stopped');
+    recognizer.onnomatch = () => debugLog('onnomatch');
 
     isSpeakingActive = true;
     failedRestarts = 0;
     try {
+      debugLog(`calling start() lang=${langCode}`);
       recognizer.start();
       sessionStartedAt = Date.now();
       armWatchdog();
+      debugLog('start() returned without throwing');
     } catch (err) {
-      console.error('speech recognition: start() threw', err);
+      debugLog(`start() THREW: ${err && err.name}: ${err && err.message}`);
     }
     acquireWakeLock();
   }
