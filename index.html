@@ -180,6 +180,9 @@
   <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js" integrity="sha384-+65NgAKqXr1Nb7sBmV6O09pL8ASqZsi29OE718meKinGAWaa70VE5V6LNjXVBjIA" crossorigin="anonymous"></script>
   <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-database-compat.js" integrity="sha384-g5H2aNdtgRBYOBLsuOAuHvUXWnw4bswmU+tYjmGc1G3JfKxl79uWwV4sQarJsLwu" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/davidshimjs-qrcodejs@0.0.2/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous"></script>
-  <script src="app.js"></script>
+  <!-- Version query bumped alongside BUILD_STAMP in app.js. GitHub Pages and iOS
+       Safari cache app.js independently of this page, so a fresh index.html would
+       otherwise still pull a stale script. -->
+  <script src="app.js?v=diag4"></script>
 </body>
 </html>

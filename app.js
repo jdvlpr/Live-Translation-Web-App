@@ -38,7 +38,7 @@ const RECOGNITION_WATCHDOG_MS = 20000;
 // Bumped by hand whenever app.js changes in a way a tester needs to confirm reached
 // their device. GitHub Pages + iOS Safari cache aggressively enough that "did the new
 // code actually load?" is otherwise unanswerable from a phone.
-const BUILD_STAMP = 'build 2026-08-30 diag-3';
+const BUILD_STAMP = 'build 2026-08-30 diag-4';
 // A recognition session ending sooner than this without any result is treated as a
 // failure to start rather than a silence, so we stop retrying and surface the error.
 const FAILED_SESSION_MS = 1500;
@@ -493,7 +493,13 @@ function startApp() {
   function changeSpeakingLanguage(newLang) {
     flushBuffer();
     currentSourceLang = newLang;
-    if (isSpeakingActive) startRecognition(newLang);
+    // Restart unconditionally rather than only when already active. A fatal error
+    // (e.g. service-not-allowed for an unsupported locale) clears isSpeakingActive,
+    // and gating on it meant picking a different language silently did nothing —
+    // exactly when retrying matters most. This also runs inside a real user gesture,
+    // which is the most permissive context iOS offers for start().
+    debugLog(`language changed to ${newLang} — restarting`);
+    startRecognition(newLang);
   }
 
   const debugLines = [];
