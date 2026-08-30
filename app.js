@@ -467,9 +467,13 @@ function startApp() {
     };
 
     recognizer.onerror = (event) => {
-      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+      if (event.error === 'not-allowed') {
         isSpeakingActive = false;
-        showToast('Microphone access denied — allow it to start transcribing.');
+        showToast('Microphone access denied — check this site’s microphone permission in your browser settings.');
+      } else if (event.error === 'service-not-allowed') {
+        isSpeakingActive = false;
+        // On iOS this fires when Dictation is off system-wide, even if mic permission is granted.
+        showToast('Speech recognition service blocked — on iPhone/iPad check Settings → General → Keyboard → Enable Dictation.');
       }
       // Other errors (e.g. 'no-speech', 'network') are recovered by onend's restart.
     };
