@@ -28,7 +28,7 @@ const STORAGE = {
 const PAUSE_MS = 3500;
 const SENTENCE_END_RE = /[.!?…]["')\]]?\s*$/;
 const STALE_PENDING_MS = 8000;
-const GEMINI_MODEL = 'gemini-2.5-flash-lite';
+const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 
 function langName(code) {
   const lang = LANGUAGES.find((l) => l.code === code);
