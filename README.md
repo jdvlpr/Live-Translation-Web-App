@@ -7,6 +7,13 @@ speaker and listeners, and the Gemini API handles translation.
 
 ## How it works
 
+- **Lobby.** Opening the app with no `?room=` in the URL shows a lobby: **Start a new room**, plus
+  a button to rejoin the room you were in most recently and a list of up to five earlier ones
+  (tap to reopen, ✕ to forget). A room id exists nowhere but the URL, so this list is the only
+  thing that makes leaving a room reversible — the alternative is remembering to press the
+  browser's Back button. The list lives in this browser's `localStorage` only: it's your own
+  history of where you've been, not a directory of rooms, and it's never uploaded anywhere.
+  Rooms are recorded when you actually enter one as speaker or listener.
 - **One URL, two roles.** Anyone who opens `index.html?room=abc123` sees "Start as Speaker" or
   "Join as Listener." Whoever taps "Start as Speaker" first wins the room (a Firebase transaction
   prevents two people from both becoming the speaker). If the room is already live, new visitors
@@ -24,6 +31,9 @@ speaker and listeners, and the Gemini API handles translation.
   because iOS Safari ends and restarts recognition sessions between sentences and repainting on
   every cycle would make a healthy mic strobe; a genuine stall still surfaces. A pause is visible
   only to the speaker — listeners see a quiet room, not a "paused" notice.
+- **Leaving a room** takes the listener back to the lobby rather than into a freshly generated
+  empty room, so the room they just left is one tap away. It doesn't affect anyone else — the
+  speaker and other listeners carry on.
 - **Listener** picks their own reading language independently. If it matches the speaker's
   language, the original text is shown immediately with no API calls. Otherwise, the first
   listener to need a given translation calls the Gemini API and writes the result back to
@@ -35,8 +45,17 @@ speaker and listeners, and the Gemini API handles translation.
 ## Files
 
 - `index.html` — markup and Tailwind (via CDN) styling.
-- `app.js` — all application logic (routing, Speech Recognition, Firebase, Gemini calls).
+- `app.js` — all application logic (routing, lobby, Speech Recognition, Firebase, Gemini calls).
 - No build step, no `node_modules`, no server code.
+
+The single-file `app.js` and the absence of a build step are deliberate rather than accidental.
+Deploying is `git push`, and testing on a phone is "reload the page" — introducing a compile step
+(a framework, or bundled modules) would put a CI job between writing a line and being able to try
+it on a device, which is the only way this app gets tested. Native ES modules would avoid the
+build step but not the other cost: a relative `import` from `app.js?v=7` resolves to
+`./speech.js` with **no** query string, so submodules fall outside the cache-busting scheme below
+and a phone could pair a fresh `app.js` with a stale module. If the file does get split later,
+carry the version through with dynamic `import()` so there's one source of truth for it.
 
 ## 1. Set up Firebase (Realtime Database)
 
@@ -168,6 +187,13 @@ your Gemini key travels with it).
   console is unreachable without a tethered Mac — so it ships in production rather than being
   stripped, since the failures it diagnoses are device-specific by nature. It's read-only and
   exposes no credentials.
+- **Forcing a fresh copy after a deploy.** iOS Safari will happily serve a cached `index.html`
+  and `app.js` for a long time. The `<script src="app.js?v=N">` query handles the script, but the
+  page itself needs a nudge: append `&cb=N` (any changing value) to the room URL, then confirm the
+  build stamp under **Settings → Diagnostics** matches what you just shipped before you trust a
+  test result. Every navigation *inside* the app (Leave, Start a new room, rejoining a listed
+  room) preserves whatever query parameters are already in the URL, so a `cb` you added survives
+  those hops instead of silently dropping you back onto the cached build.
 - **Toasts that ask you to do something stay until dismissed.** Anything instructing the reader to
   change a device setting, warning about credential exposure, or reporting an error shows a "Got
   it" button and no timer, because a timed-out toast can't be brought back. Incidental messages

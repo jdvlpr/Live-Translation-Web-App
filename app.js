@@ -30,6 +30,7 @@ const STORAGE = {
   firebaseConfig: 'rtt_firebase_config',
   geminiKey: 'rtt_gemini_key',
   targetLang: 'rtt_target_lang',
+  recentRooms: 'rtt_recent_rooms',
 };
 
 const PAUSE_MS = 3500;
@@ -46,7 +47,7 @@ const RECOGNITION_WATCHDOG_MS = 20000;
 // app.js changes in a way a tester needs to confirm reached their device. GitHub Pages +
 // iOS Safari cache aggressively enough that "did the new code actually load?" is
 // otherwise unanswerable from a phone.
-const BUILD_STAMP = 'build 2026-08-31 v6';
+const BUILD_STAMP = 'build 2026-08-31 v7';
 // A recognition session ending sooner than this without any result is treated as a
 // failure to start rather than a silence, so we stop retrying and surface the error.
 const FAILED_SESSION_MS = 1500;
@@ -77,17 +78,30 @@ function generateRoomId() {
   return Math.random().toString(36).slice(2, 8);
 }
 
+// Null when the URL carries no ?room=. "No room yet" is a real destination now — the lobby —
+// rather than a cue to invent an id on the spot, so arriving at the bare URL offers a choice
+// instead of silently dropping the visitor into an empty room they never asked for.
 function resolveRoomId() {
-  const params = new URLSearchParams(location.search);
-  let roomId = params.get('room');
-  if (!roomId) {
-    roomId = generateRoomId();
-    params.set('room', roomId);
-    history.replaceState(null, '', `${location.pathname}?${params.toString()}`);
-  }
-  return roomId;
+  return new URLSearchParams(location.search).get('room');
 }
 
+// Internal navigations rebuild the URL from the *current* query rather than from
+// location.pathname alone. Whatever else is already in there has to survive — in particular
+// the ?cb= cache-buster used to force iOS Safari past a stale copy of the app. Navigating to
+// a bare pathname would hand the phone back exactly the cached build the tester appended
+// that parameter to escape, and the resulting "my fix didn't deploy" is near-impossible to
+// diagnose from a device with no console.
+function urlForRoom(id) {
+  const params = new URLSearchParams(location.search);
+  if (id) params.set('room', id);
+  else params.delete('room');
+  const query = params.toString();
+  return `${location.pathname}${query ? `?${query}` : ''}`;
+}
+
+// Unlike urlForRoom above, this builds a *fresh* parameter list rather than inheriting the
+// current one: a shared link should carry the room and nothing else, not a cache-buster or
+// whatever else happened to be in the sharer's address bar.
 function shareUrl(roomId, includeCreds) {
   const params = new URLSearchParams();
   params.set('room', roomId);
@@ -97,6 +111,63 @@ function shareUrl(roomId, includeCreds) {
     if (payload) url += `#setup=${payload}`;
   }
   return url;
+}
+
+/* ---------- Recent rooms ---------- */
+
+// A room id exists nowhere but the URL, so leaving one used to destroy the only reference to
+// it. This is the visitor's own history of where they've been, kept in their browser — not a
+// directory of rooms, and never published anywhere.
+const MAX_RECENT_ROOMS = 5;
+
+function loadRecentRooms() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE.recentRooms) || '[]');
+    if (!Array.isArray(parsed)) return [];
+    // Entries are filtered rather than trusted: this is parsed from storage that a previous
+    // version (or a hand-edited devtools session) may have written in another shape.
+    return parsed.filter((r) => r && typeof r.id === 'string');
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentRooms(rooms) {
+  try {
+    localStorage.setItem(STORAGE.recentRooms, JSON.stringify(rooms.slice(0, MAX_RECENT_ROOMS)));
+  } catch {
+    // Safari in private mode can refuse writes. Losing the list is survivable; throwing here
+    // would take down whichever view was mid-render over a convenience feature.
+  }
+}
+
+function recordRecentRoom(id, role) {
+  if (!id) return;
+  const rooms = loadRecentRooms().filter((r) => r.id !== id);
+  rooms.unshift({ id, role, at: Date.now() });
+  saveRecentRooms(rooms);
+}
+
+function forgetRecentRoom(id) {
+  saveRecentRooms(loadRecentRooms().filter((r) => r.id !== id));
+}
+
+// Past tense and about *this visitor* on purpose: whether they spoke or listened is a fact
+// about their own visit that stays true, whereas who is speaking in that room now is not
+// something this list has any way to know.
+function describeVisit(entry) {
+  const verb = entry.role === 'speaker' ? 'Spoke' : 'Listened';
+  return `${verb} · ${relativeTime(entry.at)}`;
+}
+
+function relativeTime(ts) {
+  const mins = Math.floor((Date.now() - ts) / 60000);
+  if (!Number.isFinite(mins) || mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hr${hrs === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
 // Packs the current browser's saved Firebase config + Gemini key into the URL hash (never
@@ -224,9 +295,9 @@ function debugLog(message) {
   }
 }
 
-// Runs after showToast is defined (a successful or failed import both report through it),
-// but before resolveRoomId() below, since that also calls history.replaceState and would
-// otherwise be able to strip our hash first.
+// Runs after showToast is defined, since a successful or failed import both report through
+// it, and before anything reads the room — the credentials in the hash have to be in place
+// before a view that needs them renders.
 importCredsFromHash();
 
 const clientId = getClientId();
@@ -234,10 +305,14 @@ const roomId = resolveRoomId();
 
 /* ---------- View switching ---------- */
 
-const VIEW_IDS = ['view-loading', 'view-config-required', 'view-chooser', 'view-speaker', 'view-listener'];
+const VIEW_IDS = ['view-loading', 'view-config-required', 'view-lobby', 'view-chooser', 'view-speaker', 'view-listener'];
 function showView(id) {
   for (const vid of VIEW_IDS) {
-    document.getElementById(vid).classList.toggle('hidden', vid !== id);
+    // Guarded because index.html and app.js are cached independently: a device holding an
+    // older page against a newer script would otherwise throw here on a view that doesn't
+    // exist yet, breaking every view rather than just the missing one.
+    const el = document.getElementById(vid);
+    if (el) el.classList.toggle('hidden', vid !== id);
   }
 }
 
@@ -372,13 +447,98 @@ function renderQr(containerId, url) {
   new QRCode(el, { text: url, width: 160, height: 160, correctLevel: QRCode.CorrectLevel.M });
 }
 
+/* ---------- Lobby view ---------- */
+
+// Deliberately outside startApp(): with no room there is nothing to subscribe to, so the
+// lobby needs no Firebase connection to render.
+function renderLobbyView() {
+  const newBtn = document.getElementById('btn-new-room');
+  if (!newBtn) {
+    // Stale cached index.html against a fresh app.js — the lobby markup isn't there to show.
+    // Fall back to the old behaviour of minting a room and carrying on, so the app still
+    // works rather than presenting a blank screen with nothing to tap.
+    location.href = urlForRoom(generateRoomId());
+    return;
+  }
+
+  showView('view-lobby');
+  const rooms = loadRecentRooms();
+
+  newBtn.onclick = () => {
+    location.href = urlForRoom(generateRoomId());
+  };
+
+  // The most recent room gets its own button rather than being row one of a list: after
+  // tapping Leave, "go back to where I just was" is the likeliest intent, and it shouldn't
+  // require picking a code out of a list to act on.
+  const rejoin = document.getElementById('btn-rejoin-last');
+  const last = rooms[0];
+  if (rejoin) {
+    rejoin.classList.toggle('hidden', !last);
+    if (last) {
+      rejoin.textContent = `↩ Rejoin ${last.id}`;
+      rejoin.onclick = () => {
+        location.href = urlForRoom(last.id);
+      };
+    }
+  }
+
+  const wrap = document.getElementById('lobby-recent-wrap');
+  const list = document.getElementById('lobby-recent-list');
+  const earlier = rooms.slice(1);
+  if (wrap) wrap.classList.toggle('hidden', earlier.length === 0);
+  if (!list) return;
+  list.innerHTML = '';
+
+  for (const entry of earlier) {
+    const row = document.createElement('li');
+    row.className = 'flex items-center gap-2';
+
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'flex-1 min-w-0 text-left px-2 py-2 rounded-lg hover:bg-slate-50';
+    const name = document.createElement('span');
+    name.className = 'block font-mono text-sm';
+    name.textContent = entry.id;
+    const when = document.createElement('span');
+    when.className = 'block text-xs text-slate-400';
+    when.textContent = describeVisit(entry);
+    open.appendChild(name);
+    open.appendChild(when);
+    open.onclick = () => {
+      location.href = urlForRoom(entry.id);
+    };
+
+    // Per-row removal, because the alternative is a list that silently accumulates every
+    // mistyped or one-off room forever with no way to tidy it.
+    const drop = document.createElement('button');
+    drop.type = 'button';
+    drop.className = 'shrink-0 px-2 py-1 text-slate-300 hover:text-slate-600';
+    drop.textContent = '✕';
+    drop.setAttribute('aria-label', `Forget room ${entry.id}`);
+    drop.onclick = () => {
+      forgetRecentRoom(entry.id);
+      renderLobbyView();
+    };
+
+    row.appendChild(open);
+    row.appendChild(drop);
+    list.appendChild(row);
+  }
+}
+
 /* ---------- Bootstrap ---------- */
 
 showView('view-loading');
 
 const firebaseConfig = loadFirebaseConfig();
 if (!firebaseConfig) {
+  // Credentials come first even with a room in hand: every view past this point needs a
+  // database connection, so asking for setup here beats letting someone pick a room and
+  // only then discover the app can't connect.
   showView('view-config-required');
+} else if (!roomId) {
+  renderLobbyView();
 } else {
   try {
     firebase.initializeApp(firebaseConfig);
@@ -645,6 +805,7 @@ function startApp() {
 
   function renderSpeakerView() {
     showView('view-speaker');
+    recordRecentRoom(roomId, 'speaker');
     document.getElementById('speaker-share-panel').classList.add('hidden');
     document.getElementById('speaker-captions').innerHTML = '<p class="text-slate-400 text-sm" id="speaker-empty-hint">Start talking — your speech will appear here and be sent to listeners.</p>';
     document.getElementById('speaker-interim').textContent = '';
@@ -1045,6 +1206,9 @@ function startApp() {
 
   function renderListenerView() {
     showView('view-listener');
+    // Recorded on arrival rather than on leaving, so the room is already in the list no
+    // matter how the visitor departs — Leave button, closed tab, or a dropped connection.
+    recordRecentRoom(roomId, 'listener');
     document.getElementById('listener-feed').innerHTML = '';
     entryElements.clear();
     stickToBottom = true;
@@ -1073,7 +1237,11 @@ function startApp() {
     };
 
     document.getElementById('btn-leave-room').onclick = () => {
-      location.href = location.pathname; // fresh room, drops ?room= so we land on a new one
+      // To the lobby, not straight into a freshly minted room. Leaving used to discard the
+      // only copy of the room id — the one in the URL — so a listener who tapped this by
+      // mistake had no way back that didn't involve knowing to press the browser's Back
+      // button. The lobby offers the room they just left as a labelled button instead.
+      location.href = urlForRoom(null);
     };
 
     stateRef.on('value', listenerStateHandler);

@@ -42,6 +42,32 @@
         </div>
       </section>
 
+      <!-- Shown when the URL carries no ?room=. Previously that state silently minted a new
+           room id, which made "Leave room" a one-way door: the id lived only in the URL, so
+           dropping it stranded the listener in an empty room with no way back short of the
+           browser's Back button. -->
+      <section id="view-lobby" class="hidden flex-1">
+        <div class="h-full flex flex-col items-center justify-center gap-6 p-6 overflow-y-auto scrollbar-thin">
+          <div class="text-center">
+            <p class="text-4xl mb-2">🌐</p>
+            <p class="text-slate-600 max-w-sm">Start a room to speak in, or rejoin one you were in.</p>
+          </div>
+
+          <div class="flex flex-col sm:flex-row gap-4 w-full max-w-md">
+            <button id="btn-new-room" class="flex-1 px-6 py-4 rounded-xl bg-indigo-600 text-white font-semibold text-lg shadow hover:bg-indigo-700">
+              ✨ Start a new room
+            </button>
+            <!-- Label is written from app.js so it can name the actual room. -->
+            <button id="btn-rejoin-last" class="hidden flex-1 px-6 py-4 rounded-xl bg-white border-2 border-indigo-600 text-indigo-600 font-semibold text-lg hover:bg-indigo-50"></button>
+          </div>
+
+          <div id="lobby-recent-wrap" class="hidden w-full max-w-md bg-white border border-slate-200 rounded-xl p-4">
+            <p class="text-sm text-slate-500 mb-2">Earlier rooms</p>
+            <ul id="lobby-recent-list" class="flex flex-col gap-1"></ul>
+          </div>
+        </div>
+      </section>
+
       <section id="view-chooser" class="hidden flex-1">
         <div class="h-full flex flex-col items-center justify-center gap-6 p-6 overflow-y-auto scrollbar-thin">
           <div class="text-center">
@@ -203,6 +229,6 @@
   <!-- Version query bumped alongside BUILD_STAMP in app.js. GitHub Pages and iOS
        Safari cache app.js independently of this page, so a fresh index.html would
        otherwise still pull a stale script. -->
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>
