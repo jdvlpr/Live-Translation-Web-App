@@ -188,8 +188,9 @@ your Gemini key travels with it).
   stripped, since the failures it diagnoses are device-specific by nature. It's read-only and
   exposes no credentials.
 - **Forcing a fresh copy after a deploy.** iOS Safari will happily serve a cached `index.html`
-  and `app.js` for a long time. The `<script src="app.js?v=N">` query handles the script, but the
-  page itself needs a nudge: append `&cb=N` (any changing value) to the room URL, then confirm the
+  and `app.js` for a long time. The `<script src="app.js?v=N">` query busts the script — but only
+  once the *new* `index.html` has loaded, since a cached page still points at the old `?v=`. So
+  the page is the one that needs the nudge: append `&cb=N` (any changing value), then confirm the
   build stamp under **Settings → Diagnostics** matches what you just shipped before you trust a
   test result. Every navigation *inside* the app (Leave, Start a new room, rejoining a listed
   room) preserves whatever query parameters are already in the URL, so a `cb` you added survives
