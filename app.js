@@ -2,8 +2,15 @@
 
 /* ---------- Config ---------- */
 
+// `speechFallback` is a locale to run *recognition* under when the device has no
+// model for the chosen one. Transcripts stay tagged with the language the speaker
+// actually picked, so translation is unaffected — only the recognizer changes.
+// Only set this where the two are close enough to be near-lossless AND share a
+// script: Bosnian and Croatian are both Latin, so Croatian recognition of Bosnian
+// speech is effectively identical. Serbian deliberately has no fallback — it is
+// written in Cyrillic, and a Croatian recognizer would emit the wrong alphabet.
 const LANGUAGES = [
-  { code: 'bs-BA', name: 'Bosnian' },
+  { code: 'bs-BA', name: 'Bosnian', speechFallback: 'hr-HR' },
   { code: 'zh-CN', name: 'Chinese' },
   { code: 'hr-HR', name: 'Croatian' },
   { code: 'nl-NL', name: 'Dutch' },
@@ -38,11 +45,16 @@ const RECOGNITION_WATCHDOG_MS = 20000;
 // Bumped by hand whenever app.js changes in a way a tester needs to confirm reached
 // their device. GitHub Pages + iOS Safari cache aggressively enough that "did the new
 // code actually load?" is otherwise unanswerable from a phone.
-const BUILD_STAMP = 'build 2026-08-30 diag-4';
+const BUILD_STAMP = 'build 2026-08-31 diag-5';
 // A recognition session ending sooner than this without any result is treated as a
 // failure to start rather than a silence, so we stop retrying and surface the error.
 const FAILED_SESSION_MS = 1500;
 const MAX_FAILED_RESTARTS = 8;
+
+function speechFallbackFor(code) {
+  const lang = LANGUAGES.find((l) => l.code === code);
+  return (lang && lang.speechFallback) || null;
+}
 
 function langName(code) {
   const lang = LANGUAGES.find((l) => l.code === code);
@@ -561,7 +573,25 @@ function startApp() {
       if (event.error === 'not-allowed') {
         isSpeakingActive = false;
         showToast('Microphone access denied — check this site’s microphone permission in your browser settings.');
-      } else if (event.error === 'service-not-allowed') {
+      } else if (event.error === 'service-not-allowed' || event.error === 'language-not-supported') {
+        // Apple reports a missing locale model as service-not-allowed (see the
+        // comment below), so both codes land here. If the chosen language has a
+        // close-enough sibling, retry under that rather than failing outright.
+        const fallback = speechFallbackFor(currentSourceLang);
+        if (fallback && langCode !== fallback) {
+          debugLog(`${langCode} unsupported here — retrying recognition as ${fallback}`);
+          // Never silent: the speaker picked one language and is getting another
+          // recogniser, and they should know that without reading the debug panel.
+          showToast(
+            `${langName(currentSourceLang)} speech recognition isn’t available on this device, so ${langName(fallback)} is being used instead — the two are nearly identical. Your text is still sent to listeners as ${langName(currentSourceLang)}.`,
+            9000
+          );
+          // The failed attempt died in milliseconds; don't let it count toward the
+          // give-up cap and starve the fallback of its own retries.
+          failedRestarts = 0;
+          startRecognition(fallback);
+          return;
+        }
         isSpeakingActive = false;
         // WebKit reports several distinct conditions through this one code (see
         // bugs.webkit.org/show_bug.cgi?id=225298): Dictation/Siri disabled system-wide,
@@ -569,14 +599,9 @@ function startApp() {
         // SFSpeechRecognizer(locale:) returns nil for locales Apple doesn't support —
         // an unsupported language. So name the likely causes rather than just one.
         showToast(
-          `Speech unavailable on this device for ${langName(langCode)}. On iPhone/iPad: enable Settings → General → Keyboard → Dictation, try another language (Apple supports fewer than Chrome), and open the link in Safari itself rather than a Home Screen icon or in-app browser.`,
+          `Speech unavailable on this device for ${langName(currentSourceLang)}. On iPhone/iPad: enable Settings → General → Keyboard → Dictation, try another language (Apple supports fewer than Chrome — Bosnian and Serbian in particular are missing), and open the link in Safari itself rather than a Home Screen icon or in-app browser.`,
           9000
         );
-      } else if (event.error === 'language-not-supported') {
-        isSpeakingActive = false;
-        // Apple's recognizer supports far fewer locales than Google's, so a language
-        // that works in desktop Chrome can be fatal on iOS.
-        showToast(`“${langName(langCode)}” isn’t supported for speech on this device — pick another language.`, 6000);
       } else if (event.error === 'audio-capture') {
         isSpeakingActive = false;
         showToast('No microphone available — check that nothing else is using it.');

@@ -135,6 +135,22 @@ your Gemini key travels with it).
 - **Speech Recognition requires Chrome (or another browser with Web Speech API support)** and a
   mic permission grant on the Speaker's device. It also needs a real network connection — it's a
   cloud API under the hood, not fully offline.
+- **The speaker's language list is limited by the device, not by this app.** Recognition runs on
+  whatever engine the browser provides, and those engines don't support the same languages. Chrome
+  uses Google's recognizer (a long list); Safari on iOS/macOS uses Apple's, which is considerably
+  shorter — notably it has **no Bosnian and no Serbian** model. Picking an unsupported language on
+  iOS fails immediately with `service-not-allowed`, which is the same error WebKit reports when
+  Dictation is disabled system-wide or when the page is running as a Home Screen web app, so the
+  message the app shows names all three possibilities.
+  - Because Bosnian and Croatian are mutually intelligible and both Latin-script, a speaker who
+    picks **Bosnian** on a device without it automatically falls back to **Croatian recognition**,
+    with a notice. Transcripts stay tagged as Bosnian, so translation for listeners is unaffected.
+  - **Serbian deliberately has no such fallback**, because it's normally written in Cyrillic and a
+    Croatian recognizer would emit Latin text — the wrong alphabet rather than a near-identical one.
+  - There is no portable way to ask a browser which recognition languages it has. The spec's
+    `SpeechRecognition.available()` does exactly this but is Chrome-only, and therefore absent on
+    precisely the platform where the limitation bites. The listener list is unaffected either way,
+    since translation goes through Gemini rather than the device.
 - **Screen Wake Lock** keeps the speaker's screen on while transcribing (where supported — Safari
   currently doesn't support it, and the app just quietly skips it there).
 - Refreshing the Speaker's tab briefly drops the Firebase connection, which can trigger the
