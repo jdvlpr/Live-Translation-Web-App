@@ -38,9 +38,11 @@ speaker and listeners, and the Gemini API handles translation.
   speaker and other listeners carry on.
 - **Ending a session** (the speaker's red **End session** button) is the one control that affects
   everybody: it clears `isLive` and `speakerId`, which disconnects every listener. It takes two
-  taps — the button arms itself, reading "End for everyone?", and disarms after 5s — because it
-  sits in a crowded header within a thumb's width of the language picker. It deliberately does
-  **not** navigate anywhere; see the note under *Ending a session must not navigate* below.
+  taps — the button arms itself, reading "End for all?", and disarms after 5s — because it sits
+  in a crowded header within a thumb's width of the language picker. The armed label is kept
+  short and the button's width pinned so arming recolours it without resizing it; that header
+  wraps on a narrow phone, and a button that grew would move the target between the two taps. It
+  deliberately does **not** navigate anywhere; see *Ending a session doesn't navigate* below.
   Afterwards everyone lands on the room's chooser screen, which is also the handoff: `speakerId`
   is now null, so the next person to tap **Start as Speaker** wins the room. There is no separate
   "leave" for the speaker, because there is no state it could produce — `onDisconnect` clears
@@ -210,16 +212,19 @@ your Gemini key travels with it).
   test result. Every navigation *inside* the app (Leave, Start a new room, Back to my rooms,
   reopening a listed room) preserves whatever query parameters are already in the URL, so a `cb`
   you added survives those hops instead of silently dropping you back onto the cached build.
-- **Ending a session must not navigate.** `closeRoom()` writes `{isLive:false, speakerId:null}`
-  and stops. It is tempting to send the speaker to the lobby on the same tap; don't. Firebase
-  applies the write to its local cache and fires the `value` listener *before* the network write
-  flushes, and that listener runs `teardownSpeakerView()`, which cancels the `onDisconnect`
-  backstop. Unloading the page there can beat the write out the door with the safety net already
-  disarmed, leaving the room `isLive` with a speaker who is gone. Every later visitor then routes
-  straight to the listener view, so nobody ever sees the chooser and the claim transaction refuses
-  to hand the room over — the room is permanently unusable to everyone but that one browser. It
-  is network-dependent, so it would show up as an occasional unreproducible "dead room". The
-  chooser's own **← Back to my rooms** is the safe way out, one tap later.
+- **Ending a session doesn't navigate.** `closeRoom()` writes `{isLive:false, speakerId:null}` and
+  stops. Sending the speaker to the lobby on the same tap looks tidier; it isn't worth it.
+  Navigating *immediately* is unsafe: Firebase applies the write to its local cache and fires the
+  `value` listener before the network write flushes, and that listener runs
+  `teardownSpeakerView()`, which cancels the `onDisconnect` backstop. Unloading there can beat the
+  write out the door with the safety net already disarmed, leaving the room `isLive` with a
+  speaker who is gone — every later visitor routes straight to the listener view, so nobody sees
+  the chooser and the claim transaction refuses to hand the room over. Network-dependent, so it
+  would surface as an occasional unreproducible "dead room". Navigating in the `set()` promise's
+  `.then()` *would* be safe, since the write is acknowledged by then — but on a flaky mobile link
+  the speaker would sit on the chooser and get yanked away seconds later. The chooser is also the
+  restart-and-handoff screen, so the exit belongs there rather than in the ending: **← Back to my
+  rooms**, one tap later.
 - **Toasts that ask you to do something stay until dismissed.** Anything instructing the reader to
   change a device setting, warning about credential exposure, or reporting an error shows a "Got
   it" button and no timer, because a timed-out toast can't be brought back. Incidental messages

@@ -905,6 +905,12 @@ function startApp() {
   let closeArmed = false;
   let closeArmTimer = null;
 
+  // Both states share this box. The armed label is kept short and the width pinned so the
+  // button doesn't change size when it arms: the speaker header wraps on a narrow phone, and a
+  // growing button would reflow the row and shift the target out from under the thumb between
+  // tap one and tap two — a confirm that moves itself is worse than no confirm at all.
+  const CLOSE_BTN_BOX = 'px-3 py-1.5 rounded-lg text-white text-sm min-w-[7.5rem] text-center';
+
   // Rewrites the classes rather than toggling one, so the armed state can't be left behind
   // by a partial reset. Keep in step with the markup for #btn-close-room in index.html.
   function resetCloseButton() {
@@ -913,7 +919,7 @@ function startApp() {
     const btn = document.getElementById('btn-close-room');
     if (!btn) return;
     btn.textContent = 'End session';
-    btn.className = 'px-3 py-1.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700';
+    btn.className = `${CLOSE_BTN_BOX} bg-red-600 font-medium hover:bg-red-700`;
   }
 
   function closeRoom() {
@@ -921,8 +927,10 @@ function startApp() {
       closeArmed = true;
       const btn = document.getElementById('btn-close-room');
       if (btn) {
-        btn.textContent = 'End for everyone?';
-        btn.className = 'px-3 py-1.5 rounded-lg bg-red-700 text-white text-sm font-bold ring-2 ring-red-300';
+        // "for all" rather than "for everyone": it names the blast radius while still fitting
+        // the resting width, so arming darkens the button instead of resizing it.
+        btn.textContent = 'End for all?';
+        btn.className = `${CLOSE_BTN_BOX} bg-red-700 font-bold ring-2 ring-red-300`;
       }
       // Disarms itself, so a header caught by accident doesn't sit in a half-pressed state
       // for the rest of the session waiting to fire on the next stray tap.
