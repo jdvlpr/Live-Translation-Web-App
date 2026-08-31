@@ -56,6 +56,25 @@ speaker and listeners, and the Gemini API handles translation.
   listener to need a given translation calls the Gemini API and writes the result back to
   Firebase — every other listener reading the same language then loads it from the cache instead
   of calling Gemini again.
+- **Both views show the same transcript**, with the same **Translated / Original / Dual** toggle
+  and the same "Show in" language picker. The speaker's copy exists so one person sitting next to
+  the speaker can read a translation off the speaker's screen without opening the room on a device
+  of their own — useful for a single guest, where sending them a link is more ceremony than the
+  conversation is worth. Two differences between the roles, both deliberate:
+  - **The speaker opens on Original**, a listener on Translated. The speaker's first use for that
+    pane is checking their own words were heard correctly. The choice is remembered per role
+    (`rtt_speaker_mode` / `rtt_listener_mode`), so switching roles doesn't overwrite the other's
+    preference. "Show in" *is* shared — the language you want to read is one preference per person.
+  - **The speaker translates lazily**, a listener eagerly. A listener keeps translating whatever
+    the mode, so toggling is instant. The speaker, whose default mode shows no translations at all,
+    starts one only when a mode that shows them is selected, and then backfills the lines it
+    skipped — otherwise a speaker with no listeners would spend Gemini quota translating every
+    sentence for an audience of nobody. Both go through the same shared cache, so a speaker reading
+    along in a language a listener already picked adds no API calls at all.
+
+  If "Show in" matches the language being spoken there is nothing to translate, so all three modes
+  render the same single column. The speaker's view says so rather than leaving the toggle looking
+  broken.
 - Supported languages: Bosnian, Chinese, Croatian, Dutch, English, French, German, Korean, Polish,
   Serbian, Spanish, Ukrainian, Urdu.
 
@@ -63,7 +82,32 @@ speaker and listeners, and the Gemini API handles translation.
 
 - `index.html` — markup and Tailwind (via CDN) styling.
 - `app.js` — all application logic (routing, lobby, Speech Recognition, Firebase, Gemini calls).
-- No build step, no `node_modules`, no server code.
+- `tests/` — `node tests/run.js`. No build step, no `node_modules`, no server code.
+
+## Tests
+
+```bash
+node tests/run.js            # everything
+node tests/run.js speaker    # just the suites whose name matches
+```
+
+No dependencies and no `package.json`: a suite that needed `npm install` before it would run
+would be the only thing in the repo that did. Each suite runs the real, unmodified `app.js`
+inside `node:vm` against a small DOM in `tests/domshim.js` (which parses `index.html`, so
+elements have their true nesting, classes and `data-*` attributes) plus a hand-rolled fake
+Firebase.
+
+**What they cannot catch**, because the shim has neither: **layout** — nothing here would notice a
+button that reflows when its label changes, which is why the pinned width on **End session** is
+asserted by comparing classes rather than by measuring; and **real network ordering** — the fake
+Firebase resolves instantly and in-process, so write-versus-unload races are invisible to it. Both
+of those still need a device. What the suites do cover is routing, the recent-rooms store, toast
+eviction, mic-status transitions across iOS's restart cycles, the display modes, and the static
+checks below.
+
+`tests/static.test.js` mostly earns its keep with one assertion: `BUILD_STAMP` in `app.js` and the
+`?v=N` on its `<script>` tag must agree. See *Forcing a fresh copy after a deploy* — bump one and
+forget the other and the app works perfectly on a desktop while the phone silently runs old code.
 
 The single-file `app.js` and the absence of a build step are deliberate rather than accidental.
 Deploying is `git push`, and testing on a phone is "reload the page" — introducing a compile step

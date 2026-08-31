@@ -155,6 +155,34 @@
             </div>
           </div>
 
+          <!-- The speaker's copy of the listener's display controls, so one person standing next
+               to the speaker can read a translation off the speaker's own screen without having
+               to open the room on a device of their own.
+
+               A row of its own, deliberately. The obvious home is the header above, but that row
+               already wraps on a narrow phone and holds #btn-close-room, whose width is pinned
+               precisely so the two-tap confirm can't move between taps. Adding a select and a
+               segmented control up there would reflow it and undo that. This also sits directly
+               above the text it governs. -->
+          <div class="flex flex-wrap items-center gap-2 px-4 py-2 bg-slate-50 border-b border-slate-200">
+            <label class="text-sm text-slate-500">Show in
+              <select id="speaker-target-lang-select" class="ml-1 border border-slate-200 rounded-lg px-2 py-1 text-sm"></select>
+            </label>
+            <div class="flex-1"></div>
+            <div class="inline-flex rounded-lg border border-slate-200 overflow-hidden text-sm" id="speaker-display-toggle">
+              <button type="button" data-mode="translated" class="px-3 py-1.5">Translated</button>
+              <button type="button" data-mode="original" class="px-3 py-1.5">Original</button>
+              <button type="button" data-mode="dual" class="px-3 py-1.5">Dual</button>
+            </div>
+          </div>
+
+          <!-- Shown when "Show in" matches the language being spoken. In that case there is
+               nothing to translate, so all three buttons render the same single column and the
+               toggle looks broken. Say why instead. -->
+          <p id="speaker-samelang-hint" class="hidden px-4 py-2 text-xs text-amber-700 bg-amber-50 border-b border-amber-200">
+            You're showing the same language you're speaking, so there's nothing to translate. Pick a different language above.
+          </p>
+
           <div class="flex-1 overflow-y-auto p-4 scrollbar-thin space-y-2" id="speaker-captions">
             <p class="text-slate-400 text-sm" id="speaker-empty-hint">Start talking — your speech will appear here and be sent to listeners.</p>
           </div>
@@ -243,6 +271,6 @@
   <!-- Version query bumped alongside BUILD_STAMP in app.js. GitHub Pages and iOS
        Safari cache app.js independently of this page, so a fresh index.html would
        otherwise still pull a stale script. -->
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>

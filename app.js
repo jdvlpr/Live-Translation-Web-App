@@ -31,6 +31,11 @@ const STORAGE = {
   geminiKey: 'rtt_gemini_key',
   targetLang: 'rtt_target_lang',
   recentRooms: 'rtt_recent_rooms',
+  // One key per role, not one shared "display mode". The two want opposite defaults — a
+  // listener wants the translation, a speaker wants their own words — so a single key would
+  // mean each role silently overwrote the other's preference every time you switched.
+  listenerMode: 'rtt_listener_mode',
+  speakerMode: 'rtt_speaker_mode',
 };
 
 const PAUSE_MS = 3500;
@@ -47,7 +52,7 @@ const RECOGNITION_WATCHDOG_MS = 20000;
 // app.js changes in a way a tester needs to confirm reached their device. GitHub Pages +
 // iOS Safari cache aggressively enough that "did the new code actually load?" is
 // otherwise unanswerable from a phone.
-const BUILD_STAMP = 'build 2026-08-31 v8';
+const BUILD_STAMP = 'build 2026-08-31 v9';
 // A recognition session ending sooner than this without any result is treated as a
 // failure to start rather than a silence, so we stop retrying and surface the error.
 const FAILED_SESSION_MS = 1500;
@@ -813,7 +818,6 @@ function startApp() {
     showView('view-speaker');
     recordRecentRoom(roomId, 'speaker');
     document.getElementById('speaker-share-panel').classList.add('hidden');
-    document.getElementById('speaker-captions').innerHTML = '<p class="text-slate-400 text-sm" id="speaker-empty-hint">Start talking — your speech will appear here and be sent to listeners.</p>';
     document.getElementById('speaker-interim').textContent = '';
 
     const select = document.getElementById('speaker-lang-select');
@@ -826,6 +830,41 @@ function startApp() {
     }
     select.value = currentSourceLang;
     select.onchange = () => changeSpeakingLanguage(select.value);
+
+    // The speaker's own view of the transcript. Same three modes the listener has, so a
+    // single person sitting next to the speaker can read the translation off this screen
+    // instead of opening the room on a device of their own.
+    detachFeedTranslations(speakerFeed);
+    resetFeed(speakerFeed); // clears the pane, so the empty-state hint is restored after it
+    document.getElementById('speaker-captions').innerHTML =
+      '<p class="text-slate-400 text-sm" id="speaker-empty-hint">Start talking — your speech will appear here and be sent to listeners.</p>';
+
+    const targetSelect = document.getElementById('speaker-target-lang-select');
+    if (targetSelect) {
+      targetSelect.innerHTML = '';
+      for (const lang of LANGUAGES) {
+        const opt = document.createElement('option');
+        opt.value = lang.code;
+        opt.textContent = lang.name;
+        targetSelect.appendChild(opt);
+      }
+      targetSelect.value = targetLang;
+      targetSelect.onchange = () => {
+        targetLang = targetSelect.value;
+        try {
+          localStorage.setItem(STORAGE.targetLang, targetLang);
+        } catch {
+          /* Safari private mode refuses writes; the choice just won't outlive the session */
+        }
+        // Re-renders what's already on screen in the new language rather than clearing it.
+        // Everything needed is in feed.segments, so this costs no network and cannot race
+        // speech that arrives while it runs.
+        rebuildFeed(speakerFeed);
+        refreshSameLangHint();
+      };
+    }
+    setupDisplayToggle(speakerFeed);
+    refreshSameLangHint();
 
     const speakerIncludeCreds = document.getElementById('speaker-include-creds');
     speakerIncludeCreds.checked = false;
@@ -887,6 +926,10 @@ function startApp() {
   function teardownSpeakerView() {
     clearTimeout(closeArmTimer); // no stray disarm firing against a view that's gone
     closeArmed = false;
+    // The speaker's feed holds Firebase 'value' listeners of its own now. This runs from the
+    // local-cache callback inside closeRoom(), so without it those listeners outlive the
+    // view and keep firing against elements that are no longer on the page.
+    detachFeedTranslations(speakerFeed);
     connectedRef.off('value', handleConnectedChange);
     // Cancel our onDisconnect registration whenever we leave the speaker role for any
     // reason (not just an explicit close) — otherwise it can outlive us and fire later
@@ -951,6 +994,9 @@ function startApp() {
     flushBuffer();
     currentSourceLang = newLang;
     debugLog(`language changed to ${newLang}`);
+    // Already-rendered lines keep the language they were actually spoken in, so there is
+    // nothing to re-render — but whether "Show in" now matches can have changed.
+    refreshSameLangHint();
     // A deliberate pause outranks a language change: picking a language while paused
     // sets up the next session rather than starting one.
     if (isPaused) {
@@ -1200,16 +1246,18 @@ function startApp() {
   function pushTranscriptSegment(text, sourceLang) {
     const ref = transcriptRef.push();
     const ts = Date.now();
-    ref.set({ id: ts, originalText: text, sourceLang, timestamp: ts });
+    const data = { id: ts, originalText: text, sourceLang, timestamp: ts };
+    ref.set(data);
 
     const hint = document.getElementById('speaker-empty-hint');
     if (hint) hint.remove();
-    const captions = document.getElementById('speaker-captions');
-    const line = document.createElement('p');
-    line.className = 'text-sm text-slate-700';
-    line.textContent = text;
-    captions.appendChild(line);
-    captions.scrollTop = captions.scrollHeight;
+    // Rendered from the local push rather than by subscribing to the transcript. Firebase
+    // fires child_added from its local cache for our own write, so a speaker-side
+    // subscription would render every segment twice — and dropping this call in favour of
+    // one would make the speaker's own captions depend on the listener's subscription
+    // lifecycle. The key is the real push key so translations land in the shared cache
+    // under the same id every other client uses.
+    addFeedEntry(speakerFeed, ref.key || String(ts), data);
   }
 
   async function acquireWakeLock() {
@@ -1230,15 +1278,247 @@ function startApp() {
     if (document.visibilityState === 'visible' && isSpeakingActive) acquireWakeLock();
   });
 
-  /* ----- Listener view ----- */
+  /* ----- Transcript feeds (shared by both views) ----- */
 
-  let displayMode = 'translated'; // 'translated' | 'original' | 'dual'
+  // Both views show the same thing — a running list of utterances, each available as spoken
+  // and as translated — so they share one renderer. Everything that differs between them is
+  // data on a feed object rather than a branch inside the renderer.
+  //
+  // The speaker's feed is why this is shared at all: it lets one person sitting next to the
+  // speaker read a translation off the speaker's screen without opening the room on a device
+  // of their own.
+  //
+  // "Which language do I want to read" is one preference per person, not per role, so
+  // targetLang stays shared. The display mode is not: see STORAGE.
   let targetLang = localStorage.getItem(STORAGE.targetLang) || 'en-US';
-  let stickToBottom = true;
   let feedGeneration = 0;
   let currentTranscriptHandler = null;
-  const activeTranslationListeners = new Map(); // transcriptKey -> { ref, handler }
-  const entryElements = new Map(); // transcriptKey -> { wrapEl, originalCol, translatedCol, translatedEl, sameLang }
+
+  const DISPLAY_MODES = ['translated', 'original', 'dual'];
+
+  function makeFeed(opts) {
+    // Anything unrecognised (an older build's value, a hand-edited localStorage) falls back
+    // to the role's default rather than leaving every mode button unhighlighted.
+    const stored = localStorage.getItem(opts.storageKey);
+    return {
+      mode: DISPLAY_MODES.includes(stored) ? stored : opts.defaultMode,
+      // transcriptKey -> { wrapEl, originalCol, originalEl, translatedCol, translatedEl,
+      //                    sameLang, sourceLang, originalText, translationStarted }
+      entries: new Map(),
+      // transcriptKey -> { ref, handler }. Per feed, so tearing one view down can never
+      // detach a listener belonging to the other.
+      translationListeners: new Map(),
+      // Everything rendered so far, in order. Switching "Show in" rebuilds the pane from
+      // this rather than refetching, which keeps the speaker's history across a language
+      // change without racing fresh speech into the middle of a reload.
+      segments: [],
+      stickToBottom: true,
+      ...opts,
+    };
+  }
+
+  // The listener translates every segment as it arrives regardless of mode: toggling should
+  // be instant, and someone in the room as a listener is there to read a translation.
+  const listenerFeed = makeFeed({
+    containerId: 'listener-feed',
+    toggleId: 'listener-display-toggle',
+    storageKey: STORAGE.listenerMode,
+    defaultMode: 'translated',
+    eager: true,
+    showMeta: true,
+    wrapClass: 'bg-white border border-slate-200 rounded-lg px-3 py-2',
+  });
+
+  // The speaker translates lazily. Its default mode shows originals, and a speaker with no
+  // listeners would otherwise spend Gemini quota translating every sentence they say for an
+  // audience of nobody. backfillTranslations() catches up when a mode that shows
+  // translations is selected.
+  const speakerFeed = makeFeed({
+    containerId: 'speaker-captions',
+    toggleId: 'speaker-display-toggle',
+    storageKey: STORAGE.speakerMode,
+    // The speaker's first use for this pane is confirming their own words were heard
+    // correctly, so it opens showing what was actually recognised.
+    defaultMode: 'original',
+    eager: false,
+    // No timestamp row. The speaker is watching their own words appear live, and on a phone
+    // that row costs a line of height per utterance in the one pane they read while talking.
+    showMeta: false,
+    wrapClass: '',
+  });
+
+  // Emphasis follows the mode, not the column. In 'dual' the translation is the point and
+  // the original is reference, so the original stays small and grey — but in 'original' that
+  // column is the only thing on screen, and styling the sole content as a secondary column
+  // turned the speaker's default view into a wall of small grey italics.
+  const PRIMARY_TEXT = 'text-slate-900 text-base break-words';
+  const SECONDARY_TEXT = 'text-slate-500 text-sm italic break-words';
+
+  function resetFeed(feed) {
+    const container = document.getElementById(feed.containerId);
+    if (container) container.innerHTML = '';
+    feed.entries.clear();
+    feed.segments = [];
+    feed.stickToBottom = true;
+  }
+
+  function detachFeedTranslations(feed) {
+    for (const { ref, handler } of feed.translationListeners.values()) ref.off('value', handler);
+    feed.translationListeners.clear();
+  }
+
+  function setupDisplayToggle(feed) {
+    const group = document.getElementById(feed.toggleId);
+    // Guarded like every other lookup here: a device holding a cached older index.html
+    // against this app.js has no speaker toggle, and the speaker view has to keep working
+    // without it rather than throwing on the way in and taking the recognizer with it.
+    if (!group) return;
+    for (const btn of group.querySelectorAll('button')) {
+      btn.onclick = () => {
+        feed.mode = btn.dataset.mode;
+        try {
+          localStorage.setItem(feed.storageKey, feed.mode);
+        } catch {
+          /* Safari private mode refuses writes; the choice just won't outlive the session */
+        }
+        updateToggleStyles(feed);
+        for (const entry of feed.entries.values()) applyDisplayMode(feed, entry);
+        backfillTranslations(feed);
+      };
+    }
+    updateToggleStyles(feed);
+  }
+
+  function updateToggleStyles(feed) {
+    const group = document.getElementById(feed.toggleId);
+    if (!group) return;
+    for (const btn of group.querySelectorAll('button')) {
+      const active = btn.dataset.mode === feed.mode;
+      btn.classList.toggle('bg-indigo-600', active);
+      btn.classList.toggle('text-white', active);
+      btn.classList.toggle('bg-white', !active);
+      btn.classList.toggle('text-slate-600', !active);
+    }
+  }
+
+  // A lazy feed skips translation while it is showing originals, so switching to a mode that
+  // shows translations has to catch up whatever never started one. Without this, the
+  // speaker's first tap on Translated reveals a column of "…" that never resolves — the
+  // feature would look broken precisely when it was first tried.
+  function backfillTranslations(feed) {
+    if (feed.mode === 'original') return;
+    for (const [key, entry] of feed.entries) {
+      if (entry.sameLang || entry.translationStarted) continue;
+      entry.translationStarted = true;
+      ensureTranslation(feed, key, entry.sourceLang, targetLang, entry.originalText, entry.translatedEl);
+    }
+  }
+
+  // Re-renders from feed.segments against the current targetLang. No network and no
+  // subscription, so it cannot duplicate or reorder anything that arrives while it runs.
+  function rebuildFeed(feed) {
+    // Nothing rendered yet means nothing to re-render, and returning here leaves whatever
+    // empty-state message the pane is showing in place instead of blanking it.
+    if (feed.segments.length === 0) return;
+    const segments = feed.segments;
+    detachFeedTranslations(feed);
+    resetFeed(feed);
+    for (const { key, data } of segments) addFeedEntry(feed, key, data);
+  }
+
+  function addFeedEntry(feed, key, data) {
+    const container = document.getElementById(feed.containerId);
+    if (!container) return;
+    const sameLang = data.sourceLang === targetLang;
+
+    const wrap = document.createElement('div');
+    wrap.className = feed.wrapClass;
+
+    if (feed.showMeta) {
+      const meta = document.createElement('div');
+      meta.className = 'text-[11px] text-slate-400 mb-1';
+      meta.textContent = new Date(data.timestamp || Date.now()).toLocaleTimeString();
+      wrap.appendChild(meta);
+    }
+
+    const row = document.createElement('div');
+    row.className = 'flex gap-3';
+
+    const originalCol = document.createElement('div');
+    originalCol.className = 'flex-1 min-w-0';
+    const originalLabel = document.createElement('div');
+    originalLabel.className = 'text-[10px] uppercase tracking-wide text-slate-400 mb-0.5';
+    originalLabel.textContent = langName(data.sourceLang);
+    const originalEl = document.createElement('p');
+    originalEl.className = SECONDARY_TEXT;
+    originalEl.textContent = data.originalText;
+    originalCol.appendChild(originalLabel);
+    originalCol.appendChild(originalEl);
+
+    const translatedCol = document.createElement('div');
+    translatedCol.className = 'flex-1 min-w-0';
+    const translatedLabel = document.createElement('div');
+    translatedLabel.className = 'text-[10px] uppercase tracking-wide text-slate-400 mb-0.5';
+    translatedLabel.textContent = langName(targetLang);
+    const translatedEl = document.createElement('p');
+    translatedEl.className = PRIMARY_TEXT;
+    translatedEl.textContent = sameLang ? data.originalText : '…';
+    if (!sameLang) translatedEl.classList.add('animate-pulse');
+    translatedCol.appendChild(translatedLabel);
+    translatedCol.appendChild(translatedEl);
+
+    row.appendChild(originalCol);
+    row.appendChild(translatedCol);
+    wrap.appendChild(row);
+
+    container.appendChild(wrap);
+    if (feed.stickToBottom) container.scrollTop = container.scrollHeight;
+
+    const entry = {
+      wrapEl: wrap,
+      originalCol,
+      originalEl,
+      translatedCol,
+      translatedEl,
+      sameLang,
+      sourceLang: data.sourceLang,
+      originalText: data.originalText,
+      translationStarted: false,
+    };
+    feed.entries.set(key, entry);
+    feed.segments.push({ key, data });
+    applyDisplayMode(feed, entry);
+
+    if (!sameLang && (feed.eager || feed.mode !== 'original')) {
+      entry.translationStarted = true;
+      ensureTranslation(feed, key, data.sourceLang, targetLang, data.originalText, translatedEl);
+    }
+  }
+
+  function applyDisplayMode(feed, entry) {
+    if (entry.sameLang) {
+      entry.originalCol.classList.add('hidden');
+      entry.translatedCol.classList.remove('hidden', 'border-l', 'border-slate-100', 'pl-3');
+      return;
+    }
+    const dual = feed.mode === 'dual';
+    entry.originalCol.classList.toggle('hidden', feed.mode === 'translated');
+    entry.translatedCol.classList.toggle('hidden', feed.mode === 'original');
+    entry.originalEl.className = feed.mode === 'original' ? PRIMARY_TEXT : SECONDARY_TEXT;
+    // Only show the divider between columns when both are visible side by side.
+    entry.translatedCol.classList.toggle('border-l', dual);
+    entry.translatedCol.classList.toggle('border-slate-100', dual);
+    entry.translatedCol.classList.toggle('pl-3', dual);
+  }
+
+  // Shown when "Show in" matches what is being spoken: every mode then renders the same
+  // single column, so the toggle looks broken unless something says why.
+  function refreshSameLangHint() {
+    const hint = document.getElementById('speaker-samelang-hint');
+    if (hint) hint.classList.toggle('hidden', targetLang !== currentSourceLang);
+  }
+
+  /* ----- Listener view ----- */
 
   // Wraps handleTranscriptChildAdded so any child_added events still in flight from a
   // subscription we just tore down (e.g. mid target-language switch) get dropped instead
@@ -1265,9 +1545,7 @@ function startApp() {
     // Recorded on arrival rather than on leaving, so the room is already in the list no
     // matter how the visitor departs — Leave button, closed tab, or a dropped connection.
     recordRecentRoom(roomId, 'listener');
-    document.getElementById('listener-feed').innerHTML = '';
-    entryElements.clear();
-    stickToBottom = true;
+    resetFeed(listenerFeed);
 
     const select = document.getElementById('listener-lang-select');
     select.innerHTML = '';
@@ -1284,12 +1562,12 @@ function startApp() {
       rebuildFeedForNewTargetLang();
     };
 
-    setupDisplayToggle();
+    setupDisplayToggle(listenerFeed);
 
     const feedEl = document.getElementById('listener-feed');
     feedEl.onscroll = () => {
       const threshold = 40;
-      stickToBottom = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < threshold;
+      listenerFeed.stickToBottom = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < threshold;
     };
 
     document.getElementById('btn-leave-room').onclick = () => {
@@ -1312,123 +1590,31 @@ function startApp() {
   function teardownListenerView() {
     stateRef.off('value', listenerStateHandler);
     detachTranscriptSubscription();
-    for (const { ref, handler } of activeTranslationListeners.values()) {
-      ref.off('value', handler);
-    }
-    activeTranslationListeners.clear();
-  }
-
-  function setupDisplayToggle() {
-    const group = document.getElementById('listener-display-toggle');
-    for (const btn of group.querySelectorAll('button')) {
-      btn.onclick = () => {
-        displayMode = btn.dataset.mode;
-        updateToggleStyles();
-        for (const el of entryElements.values()) applyDisplayMode(el);
-      };
-    }
-    updateToggleStyles();
-  }
-
-  function updateToggleStyles() {
-    const group = document.getElementById('listener-display-toggle');
-    for (const btn of group.querySelectorAll('button')) {
-      const active = btn.dataset.mode === displayMode;
-      btn.classList.toggle('bg-indigo-600', active);
-      btn.classList.toggle('text-white', active);
-      btn.classList.toggle('bg-white', !active);
-      btn.classList.toggle('text-slate-600', !active);
-    }
+    detachFeedTranslations(listenerFeed);
   }
 
   function handleTranscriptChildAdded(snap) {
     const key = snap.key;
     const data = snap.val();
     if (!data) return;
-    addFeedEntry(key, data);
+    addFeedEntry(listenerFeed, key, data);
   }
 
-  function addFeedEntry(key, data) {
-    const sameLang = data.sourceLang === targetLang;
-
-    const wrap = document.createElement('div');
-    wrap.className = 'bg-white border border-slate-200 rounded-lg px-3 py-2';
-
-    const meta = document.createElement('div');
-    meta.className = 'text-[11px] text-slate-400 mb-1';
-    meta.textContent = new Date(data.timestamp || Date.now()).toLocaleTimeString();
-
-    const row = document.createElement('div');
-    row.className = 'flex gap-3';
-
-    const originalCol = document.createElement('div');
-    originalCol.className = 'flex-1 min-w-0';
-    const originalLabel = document.createElement('div');
-    originalLabel.className = 'text-[10px] uppercase tracking-wide text-slate-400 mb-0.5';
-    originalLabel.textContent = langName(data.sourceLang);
-    const originalEl = document.createElement('p');
-    originalEl.className = 'text-slate-500 text-sm italic break-words';
-    originalEl.textContent = data.originalText;
-    originalCol.appendChild(originalLabel);
-    originalCol.appendChild(originalEl);
-
-    const translatedCol = document.createElement('div');
-    translatedCol.className = 'flex-1 min-w-0';
-    const translatedLabel = document.createElement('div');
-    translatedLabel.className = 'text-[10px] uppercase tracking-wide text-slate-400 mb-0.5';
-    translatedLabel.textContent = langName(targetLang);
-    const translatedEl = document.createElement('p');
-    translatedEl.className = 'text-slate-900 text-base break-words';
-    translatedEl.textContent = sameLang ? data.originalText : '…';
-    if (!sameLang) translatedEl.classList.add('animate-pulse');
-    translatedCol.appendChild(translatedLabel);
-    translatedCol.appendChild(translatedEl);
-
-    row.appendChild(originalCol);
-    row.appendChild(translatedCol);
-
-    wrap.appendChild(meta);
-    wrap.appendChild(row);
-
-    const feedEl = document.getElementById('listener-feed');
-    feedEl.appendChild(wrap);
-    if (stickToBottom) feedEl.scrollTop = feedEl.scrollHeight;
-
-    const entry = { wrapEl: wrap, originalCol, translatedCol, translatedEl, sameLang };
-    entryElements.set(key, entry);
-    applyDisplayMode(entry);
-
-    if (!sameLang) {
-      ensureTranslation(key, data.sourceLang, targetLang, data.originalText, translatedEl);
-    }
-  }
-
-  function applyDisplayMode(entry) {
-    if (entry.sameLang) {
-      entry.originalCol.classList.add('hidden');
-      entry.translatedCol.classList.remove('hidden', 'border-l', 'border-slate-100', 'pl-3');
-      return;
-    }
-    const dual = displayMode === 'dual';
-    entry.originalCol.classList.toggle('hidden', displayMode === 'translated');
-    entry.translatedCol.classList.toggle('hidden', displayMode === 'original');
-    // Only show the divider between columns when both are visible side by side.
-    entry.translatedCol.classList.toggle('border-l', dual);
-    entry.translatedCol.classList.toggle('border-slate-100', dual);
-    entry.translatedCol.classList.toggle('pl-3', dual);
-  }
-
+  // The listener repopulates from Firebase rather than from feed.segments: it has a live
+  // subscription and up to 300 segments of room history behind it, so a re-subscribe brings
+  // back more than this client happened to have rendered.
   function rebuildFeedForNewTargetLang() {
     teardownListenerView();
-    document.getElementById('listener-feed').innerHTML = '';
-    entryElements.clear();
+    resetFeed(listenerFeed);
     stateRef.on('value', listenerStateHandler);
     attachTranscriptSubscription();
   }
 
-  // Shared translation cache: claim-by-transaction so only one listener per
-  // language calls Gemini for a given segment; everyone else just watches.
-  function ensureTranslation(transcriptKey, sourceLang, target, originalText, translatedEl) {
+  // Shared translation cache: claim-by-transaction so only one client per language calls
+  // Gemini for a given segment; everyone else just watches. The speaker's own feed goes
+  // through here too, so a speaker reading along in the same language a listener chose adds
+  // no extra Gemini calls — it watches the value the listener already paid for.
+  function ensureTranslation(feed, transcriptKey, sourceLang, target, originalText, translatedEl) {
     const tRef = translationsRef.child(transcriptKey).child(target);
     let attempted = false;
 
@@ -1446,7 +1632,7 @@ function startApp() {
       attemptClaim();
     };
     tRef.on('value', handler);
-    activeTranslationListeners.set(transcriptKey, { ref: tRef, handler });
+    feed.translationListeners.set(transcriptKey, { ref: tRef, handler });
 
     function scheduleStaleCheck() {
       attempted = true;
