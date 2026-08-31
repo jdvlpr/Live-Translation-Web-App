@@ -14,6 +14,13 @@ speaker and listeners, and the Gemini API handles translation.
 - **Speaker** picks their spoken language, and the browser's Web Speech API transcribes
   continuously, buffering until a sentence ends (`.`/`?`/`!`) or 3.5s of silence, then pushes the
   segment to Firebase.
+- **Mic status bar.** A colour-coded bar under the speaker's controls shows whether audio is
+  actually reaching the recognizer — grey "Starting", green "Live" (flashing "Hearing you…" as
+  you speak), amber "Paused", red "Mic unavailable" — with a **Pause / Resume** button. Pausing
+  sends any half-finished sentence, stops the mic, and releases the screen wake lock, but leaves
+  the room open and listeners connected; Resume picks the mic back up. In the red state the
+  button becomes **Try again**. Recognition still starts on its own when the speaker view opens —
+  pause is an override, not a prerequisite.
 - **Listener** picks their own reading language independently. If it matches the speaker's
   language, the original text is shown immediately with no API calls. Otherwise, the first
   listener to need a given translation calls the Gemini API and writes the result back to
@@ -151,8 +158,21 @@ your Gemini key travels with it).
     `SpeechRecognition.available()` does exactly this but is Chrome-only, and therefore absent on
     precisely the platform where the limitation bites. The listener list is unaffected either way,
     since translation goes through Gemini rather than the device.
+- **Diagnostics live in Settings.** The gear menu has a collapsed "Diagnostics" section holding a
+  timestamped log of the speech-recognition lifecycle (`onstart` / `onaudiostart` / `onerror` /
+  restarts), the build stamp, and a **Copy** button that bundles the log with the browser's user
+  agent. This is the only practical way to debug speech recognition on an iPhone, where the
+  console is unreachable without a tethered Mac — so it ships in production rather than being
+  stripped, since the failures it diagnoses are device-specific by nature. It's read-only and
+  exposes no credentials.
+- **Toasts that ask you to do something stay until dismissed.** Anything instructing the reader to
+  change a device setting, warning about credential exposure, or reporting an error shows a "Got
+  it" button and no timer, because a timed-out toast can't be brought back. Incidental messages
+  ("Link copied.") still fade on their own. Toasts stack rather than replace, and when the stack
+  is trimmed the timed ones are dropped before the dismiss-required ones.
 - **Screen Wake Lock** keeps the speaker's screen on while transcribing (where supported — Safari
-  currently doesn't support it, and the app just quietly skips it there).
+  currently doesn't support it, and the app just quietly skips it there). It's released while
+  paused, so a paused phone can sleep normally.
 - Refreshing the Speaker's tab briefly drops the Firebase connection, which can trigger the
   auto-close-on-disconnect safety net even though the speaker didn't intend to leave. If that
   happens, just tap "Start as Speaker" again — the room reclaims automatically.

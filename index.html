@@ -80,29 +80,25 @@
       <section id="view-speaker" class="hidden flex-1">
         <div class="h-full flex flex-col">
           <div class="flex flex-wrap items-center gap-3 px-4 py-3 bg-white border-b border-slate-200">
-            <span class="flex items-center gap-1.5 text-sm font-medium text-emerald-600">
-              <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 live-dot"></span> LIVE
-            </span>
-            <label class="text-sm text-slate-500 ml-1">Speaking in
+            <label class="text-sm text-slate-500">Speaking in
               <select id="speaker-lang-select" class="ml-1 border border-slate-200 rounded-lg px-2 py-1 text-sm"></select>
             </label>
             <div class="flex-1"></div>
-            <button id="btn-toggle-debug" class="text-sm text-slate-500 hover:underline">Debug</button>
             <button id="btn-toggle-share" class="text-sm text-indigo-600 hover:underline">Share link</button>
             <button id="btn-close-room" class="px-3 py-1.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700">Close Room</button>
           </div>
 
-          <!-- On-screen mirror of the speech-recognition lifecycle. iOS Safari's console
-               is unreachable without a tethered Mac, so this is the only way to see what
-               the recognizer is actually doing when testing from a phone. -->
-          <div id="speaker-debug-panel" class="hidden border-b border-slate-200 bg-slate-900 text-slate-100">
-            <div class="flex items-center gap-2 px-3 py-2 border-b border-slate-700">
-              <span class="text-xs font-mono text-emerald-400" id="debug-build-stamp"></span>
-              <div class="flex-1"></div>
-              <button id="btn-copy-debug" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Copy</button>
-              <button id="btn-clear-debug" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Clear</button>
+          <!-- Mic state, front and centre. A speaker mid-talk needs to know at a glance
+               whether their voice is actually reaching listeners, and be able to stop it
+               without ending the room. All of the colours/labels/button text here are set
+               from setMicStatus() in app.js; the markup is just the shell. -->
+          <div id="speaker-status-bar" class="flex items-center gap-3 px-4 py-3 border-b">
+            <span id="speaker-status-dot" class="w-3.5 h-3.5 rounded-full shrink-0"></span>
+            <div class="flex-1 min-w-0" role="status" aria-live="polite">
+              <p id="speaker-status-label" class="text-sm font-bold uppercase tracking-wide leading-tight"></p>
+              <p id="speaker-status-detail" class="text-xs leading-tight mt-0.5"></p>
             </div>
-            <div id="speaker-debug-log" class="max-h-48 overflow-y-auto p-3 text-[11px] leading-relaxed font-mono whitespace-pre-wrap break-words"></div>
+            <button id="btn-toggle-mic" class="shrink-0 px-4 py-2 rounded-lg text-sm font-semibold"></button>
           </div>
 
           <div id="speaker-share-panel" class="hidden border-b border-slate-200 bg-white">
@@ -150,7 +146,10 @@
       </section>
     </main>
 
-    <div id="toast" class="hidden fixed bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm shadow-lg z-50 max-w-[90vw] text-center"></div>
+    <!-- A stack rather than a single slot: messages that must stay until dismissed
+         (setup instructions, security warnings) would otherwise be silently replaced
+         by the next incidental "Link copied." Individual toasts are built in app.js. -->
+    <div id="toast-stack" role="status" aria-live="polite" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 w-[min(92vw,28rem)] flex flex-col gap-2 pointer-events-none"></div>
   </div>
 
   <div id="modal-settings" class="hidden fixed inset-0 bg-black/50 z-50">
@@ -166,6 +165,27 @@
         <label class="block text-sm font-medium text-slate-700 mb-1">Gemini API key</label>
         <input id="input-gemini-key" type="password" placeholder="AIza…" autocomplete="off" class="w-full text-sm border border-slate-200 rounded-lg p-2 mb-1" />
         <p class="text-xs text-slate-400 mb-4">From Google AI Studio. Called directly from the browser to translate text — every listener can see this key in devtools, so use a key you're comfortable exposing client-side.</p>
+
+        <!-- On-screen mirror of the speech-recognition lifecycle. iOS Safari's console is
+             unreachable without a tethered Mac, so on a phone this is the only way to see
+             what the recognizer is actually doing. Kept out of the main UI but shipped in
+             production: the failures it diagnoses are device-specific, so they show up on
+             hardware that was never tested here. -->
+        <div class="border-t border-slate-200 pt-4 mb-4">
+          <button id="btn-toggle-debug" type="button" class="text-sm font-medium text-slate-600 hover:text-slate-900">
+            <span id="debug-toggle-caret">▸</span> Diagnostics
+          </button>
+          <p class="text-xs text-slate-400 mt-1">A log of what speech recognition is doing on this device. If speech-to-text won't start, open this, reproduce the problem, then tap Copy and include it in a bug report.</p>
+          <div id="settings-debug-panel" class="hidden mt-2 rounded-lg bg-slate-900 text-slate-100 overflow-hidden">
+            <div class="flex items-center gap-2 px-3 py-2 border-b border-slate-700">
+              <span class="text-xs font-mono text-emerald-400" id="debug-build-stamp"></span>
+              <div class="flex-1"></div>
+              <button id="btn-copy-debug" type="button" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Copy</button>
+              <button id="btn-clear-debug" type="button" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Clear</button>
+            </div>
+            <div id="debug-log" class="max-h-48 overflow-y-auto p-3 text-[11px] leading-relaxed font-mono whitespace-pre-wrap break-words"></div>
+          </div>
+        </div>
 
         <p id="settings-error" class="hidden text-sm text-red-600 mb-3"></p>
 
@@ -183,6 +203,6 @@
   <!-- Version query bumped alongside BUILD_STAMP in app.js. GitHub Pages and iOS
        Safari cache app.js independently of this page, so a fresh index.html would
        otherwise still pull a stale script. -->
-  <script src="app.js?v=diag5"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

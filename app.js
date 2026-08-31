@@ -42,10 +42,11 @@ const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 // Scoped to iOS since Chrome/desktop don't exhibit this failure mode.
 const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent);
 const RECOGNITION_WATCHDOG_MS = 20000;
-// Bumped by hand whenever app.js changes in a way a tester needs to confirm reached
-// their device. GitHub Pages + iOS Safari cache aggressively enough that "did the new
-// code actually load?" is otherwise unanswerable from a phone.
-const BUILD_STAMP = 'build 2026-08-31 diag-5';
+// Bumped by hand, together with the ?v= on the <script> tag in index.html, whenever
+// app.js changes in a way a tester needs to confirm reached their device. GitHub Pages +
+// iOS Safari cache aggressively enough that "did the new code actually load?" is
+// otherwise unanswerable from a phone.
+const BUILD_STAMP = 'build 2026-08-31 v6';
 // A recognition session ending sooner than this without any result is treated as a
 // failure to start rather than a silence, so we stop retrying and surface the error.
 const FAILED_SESSION_MS = 1500;
@@ -118,7 +119,7 @@ function importCredsFromHash() {
     showToast('Credentials loaded from link.');
   } catch (err) {
     console.error('Failed to import credentials from link', err);
-    showToast('Could not read credentials from this link.');
+    showToast('Could not read credentials from this link — open Settings and enter them manually.', TOAST_STICKY);
   } finally {
     history.replaceState(null, '', location.pathname + location.search);
   }
@@ -126,18 +127,97 @@ function importCredsFromHash() {
 
 /* ---------- Toast ---------- */
 
-let toastTimer = null;
-function showToast(msg, ms = 3500) {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.classList.remove('hidden');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.add('hidden'), ms);
+// Pass as the duration for anything the reader may need to act on while it's still on
+// screen — device settings to change, a warning to weigh, an error to report. Those
+// toasts stay put until dismissed, because once one times out there's no way to get it
+// back and the instructions are gone.
+const TOAST_STICKY = 0;
+const TOAST_MS = 6000;
+// Older messages are dropped past this, so a burst can't cover the whole screen.
+const MAX_TOASTS = 4;
+
+function showToast(msg, ms = TOAST_MS) {
+  const stack = document.getElementById('toast-stack');
+  if (!stack) return;
+  const sticky = ms === TOAST_STICKY;
+
+  // Repeats of a message already on screen (retrying a failing action, say) restart its
+  // timer instead of stacking identical copies.
+  for (const existing of stack.children) {
+    if (existing.dataset.msg === msg) {
+      if (!sticky) {
+        clearTimeout(Number(existing.dataset.timer));
+        existing.dataset.timer = String(setTimeout(() => existing.remove(), ms));
+      }
+      return;
+    }
+  }
+
+  const toast = document.createElement('div');
+  toast.dataset.msg = msg;
+  if (sticky) toast.dataset.sticky = '1';
+  toast.className =
+    'pointer-events-auto flex items-start gap-3 px-4 py-3 rounded-lg bg-slate-900 text-white text-sm shadow-lg';
+
+  const text = document.createElement('span');
+  text.className = 'flex-1 min-w-0';
+  text.textContent = msg;
+
+  const dismiss = document.createElement('button');
+  dismiss.type = 'button';
+  // A sticky toast needs an obvious way out, since nothing else will remove it; a
+  // timed one just gets a quiet ✕ for anyone who wants the screen back sooner.
+  dismiss.className = sticky
+    ? 'shrink-0 px-2 py-0.5 -my-0.5 rounded bg-white/15 hover:bg-white/25 text-xs font-semibold'
+    : 'shrink-0 px-1.5 rounded hover:bg-white/15 leading-none';
+  dismiss.textContent = sticky ? 'Got it' : '✕';
+  dismiss.setAttribute('aria-label', 'Dismiss');
+
+  const remove = () => {
+    clearTimeout(Number(toast.dataset.timer));
+    toast.remove();
+  };
+  dismiss.onclick = remove;
+
+  toast.appendChild(text);
+  toast.appendChild(dismiss);
+
+  // Make room *before* appending, so the incoming toast can never be chosen as its own
+  // victim. Oldest goes first, but timed toasts are sacrificed ahead of sticky ones — a
+  // message the reader was told to act on shouldn't be evicted by a "Link copied."
+  // arriving behind it. Only when the whole stack is sticky does the oldest sticky go.
+  while (stack.children.length >= MAX_TOASTS) {
+    const victim = [...stack.children].find((t) => !t.dataset.sticky) || stack.firstElementChild;
+    clearTimeout(Number(victim.dataset.timer));
+    victim.remove();
+  }
+
+  stack.appendChild(toast);
+  if (!sticky) toast.dataset.timer = String(setTimeout(remove, ms));
 }
 
-// Runs after showToast's own state (toastTimer) is initialized (a successful or failed
-// import both report through showToast), but before resolveRoomId() below, since that also
-// calls history.replaceState and would otherwise be able to strip our hash first.
+/* ---------- Diagnostics log ---------- */
+
+// Module-scoped rather than living with the speaker code, because the panel that shows it
+// now sits in the Settings modal, which is reachable from every view.
+const debugLines = [];
+
+function debugLog(message) {
+  const stamp = new Date().toISOString().slice(11, 23);
+  const line = `${stamp}  ${message}`;
+  debugLines.push(line);
+  if (debugLines.length > 200) debugLines.shift();
+  console.info('[rtt]', line);
+  const el = document.getElementById('debug-log');
+  if (el) {
+    el.textContent = debugLines.join('\n');
+    el.scrollTop = el.scrollHeight;
+  }
+}
+
+// Runs after showToast is defined (a successful or failed import both report through it),
+// but before resolveRoomId() below, since that also calls history.replaceState and would
+// otherwise be able to strip our hash first.
 importCredsFromHash();
 
 const clientId = getClientId();
@@ -175,6 +255,7 @@ function openSettingsModal() {
   document.getElementById('settings-error').classList.add('hidden');
   document.getElementById('btn-settings-cancel').classList.toggle('hidden', !cfg);
   document.getElementById('modal-settings').classList.remove('hidden');
+  renderDebugPanel();
 }
 
 function closeSettingsModal() {
@@ -208,6 +289,54 @@ document.getElementById('btn-config-open-settings').addEventListener('click', op
 document.getElementById('btn-settings-save').addEventListener('click', saveSettings);
 document.getElementById('btn-settings-cancel').addEventListener('click', closeSettingsModal);
 
+/* ---------- Diagnostics panel (inside Settings) ---------- */
+
+function renderDebugPanel() {
+  const stamp = document.getElementById('debug-build-stamp');
+  if (stamp) stamp.textContent = BUILD_STAMP;
+  const log = document.getElementById('debug-log');
+  if (log) {
+    log.textContent = debugLines.join('\n');
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+// Every lookup is guarded: a device can be holding a cached index.html while loading a
+// fresh app.js, and an unguarded null here would abort the rest of this script — taking
+// the app down over a panel nobody was looking at.
+(function wireDebugPanel() {
+  const toggleBtn = document.getElementById('btn-toggle-debug');
+  if (toggleBtn) {
+    toggleBtn.onclick = () => {
+      const panel = document.getElementById('settings-debug-panel');
+      if (!panel) return;
+      const nowHidden = panel.classList.toggle('hidden');
+      const caret = document.getElementById('debug-toggle-caret');
+      if (caret) caret.textContent = nowHidden ? '▸' : '▾';
+      if (!nowHidden) renderDebugPanel();
+    };
+  }
+
+  const clearBtn = document.getElementById('btn-clear-debug');
+  if (clearBtn) {
+    clearBtn.onclick = () => {
+      debugLines.length = 0;
+      renderDebugPanel();
+    };
+  }
+
+  const copyBtn = document.getElementById('btn-copy-debug');
+  if (copyBtn) {
+    copyBtn.onclick = () => {
+      const text = `${BUILD_STAMP}\n${navigator.userAgent}\n\n${debugLines.join('\n')}`;
+      navigator.clipboard?.writeText(text).then(
+        () => showToast('Diagnostics copied.'),
+        () => showToast('Could not copy — select the text manually.')
+      );
+    };
+  }
+})();
+
 /* ---------- Copy-link buttons (delegated) ---------- */
 
 document.addEventListener('click', (e) => {
@@ -220,7 +349,7 @@ document.addEventListener('click', (e) => {
     .then(() => showToast('Link copied.'))
     .catch(() => {
       input.select();
-      showToast('Press Ctrl/Cmd+C to copy.');
+      showToast('Press Ctrl/Cmd+C to copy.', TOAST_STICKY);
     });
 });
 
@@ -248,7 +377,7 @@ if (!firebaseConfig) {
   } catch (err) {
     console.error(err);
     showView('view-config-required');
-    showToast('Could not connect to Firebase — check your config in Settings.');
+    showToast('Could not connect to Firebase — check your config in Settings.', TOAST_STICKY);
   }
 }
 
@@ -318,7 +447,7 @@ function startApp() {
       renderQr('chooser-qrcode', url);
     };
     includeCreds.onchange = () => {
-      if (includeCreds.checked) showToast("This link/QR carries your credentials — anyone who has it can use your Gemini quota.", 5000);
+      if (includeCreds.checked) showToast('This link/QR carries your credentials — anyone who has it can use your Gemini quota.', TOAST_STICKY);
       updateChooserShare();
     };
     updateChooserShare();
@@ -349,7 +478,7 @@ function startApp() {
         return true;
       })
       .catch(() => {
-        showToast('Microphone access denied — allow it in your browser/device settings to speak.');
+        showToast('Microphone access denied — allow it in your browser/device settings, then tap “Start as Speaker” again.', TOAST_STICKY);
         return false;
       });
   }
@@ -372,7 +501,7 @@ function startApp() {
         })
         .catch((err) => {
           console.error(err);
-          showToast('Could not start the room. Check your Firebase config.');
+          showToast('Could not start the room. Check your Firebase config in Settings.', TOAST_STICKY);
         });
     });
   }
@@ -390,6 +519,96 @@ function startApp() {
   let currentSourceLang = LANGUAGES[0].code; // bs-BA default
   let wakeLock = null;
   let disconnectHandlerAttached = false;
+  let isPaused = false;
+  let micState = 'starting'; // key into MIC_STATUS below
+  let speechCueTimer = null;
+
+  // Drives the status bar. `className` is assigned wholesale per state rather than
+  // toggled, so no colour from a previous state can survive into the next one.
+  const MIC_STATUS = {
+    starting: {
+      label: 'Starting',
+      detail: 'Connecting to the microphone…',
+      bar: 'bg-slate-100 border-slate-200 text-slate-600',
+      dot: 'bg-slate-400 live-dot',
+      button: 'Pause',
+      btnClass: 'bg-slate-200 text-slate-700 hover:bg-slate-300',
+    },
+    live: {
+      label: 'Live',
+      detail: 'Listening — what you say is going to listeners.',
+      bar: 'bg-emerald-50 border-emerald-200 text-emerald-800',
+      dot: 'bg-emerald-500 live-dot',
+      button: 'Pause',
+      btnClass: 'bg-emerald-600 text-white hover:bg-emerald-700',
+    },
+    paused: {
+      label: 'Paused',
+      detail: 'Your mic is off. Nothing is being sent — the room is still open.',
+      bar: 'bg-amber-50 border-amber-200 text-amber-900',
+      dot: 'bg-amber-500',
+      button: 'Resume',
+      btnClass: 'bg-amber-600 text-white hover:bg-amber-700',
+    },
+    error: {
+      label: 'Mic unavailable',
+      detail: 'Speech recognition could not start on this device.',
+      bar: 'bg-red-50 border-red-200 text-red-800',
+      dot: 'bg-red-500',
+      button: 'Try again',
+      btnClass: 'bg-red-600 text-white hover:bg-red-700',
+    },
+  };
+
+  function setMicStatus(state, detailOverride) {
+    micState = state;
+    clearTimeout(speechCueTimer);
+    const s = MIC_STATUS[state];
+    const bar = document.getElementById('speaker-status-bar');
+    if (!bar || !s) return;
+    bar.className = `flex items-center gap-3 px-4 py-3 border-b ${s.bar}`;
+    document.getElementById('speaker-status-dot').className = `w-3.5 h-3.5 rounded-full shrink-0 ${s.dot}`;
+    document.getElementById('speaker-status-label').textContent = s.label;
+    document.getElementById('speaker-status-detail').textContent = detailOverride || s.detail;
+    const btn = document.getElementById('btn-toggle-mic');
+    btn.className = `shrink-0 px-4 py-2 rounded-lg text-sm font-semibold ${s.btnClass}`;
+    btn.textContent = s.button;
+  }
+
+  // Momentary "we are hearing audio right now" feedback. The pulsing dot only proves the
+  // session is open; this proves sound is actually reaching the recognizer, which is the
+  // thing a speaker is really asking when they glance at the screen.
+  function flashSpeechCue() {
+    // Speech or a transcript is stronger evidence of a working mic than onaudiostart,
+    // which not every engine reliably fires. Without this promotion, an engine that
+    // skips onaudiostart would leave the bar reading "Starting" while transcription was
+    // visibly working — the exact false alarm this bar exists to prevent. Only
+    // 'starting' is promoted: 'paused' and 'error' are deliberate states to stay in.
+    if (micState === 'starting') setMicStatus('live');
+    if (micState !== 'live') return;
+    const detail = document.getElementById('speaker-status-detail');
+    if (!detail) return;
+    detail.textContent = 'Hearing you…';
+    clearTimeout(speechCueTimer);
+    speechCueTimer = setTimeout(() => {
+      if (micState === 'live') setMicStatus('live');
+    }, 1500);
+  }
+
+  function pauseSpeaking() {
+    isPaused = true;
+    debugLog('paused by speaker');
+    stopRecognition(); // flushes any trailing sentence, then tears the recognizer down
+    const interim = document.getElementById('speaker-interim');
+    if (interim) interim.textContent = '';
+    setMicStatus('paused');
+  }
+
+  function resumeSpeaking() {
+    isPaused = false;
+    debugLog('resumed by speaker');
+    startRecognition(currentSourceLang);
+  }
 
   function renderSpeakerView() {
     showView('view-speaker');
@@ -416,7 +635,7 @@ function startApp() {
       renderQr('speaker-qrcode', url);
     };
     speakerIncludeCreds.onchange = () => {
-      if (speakerIncludeCreds.checked) showToast("This link/QR carries your credentials — anyone who has it can use your Gemini quota.", 5000);
+      if (speakerIncludeCreds.checked) showToast('This link/QR carries your credentials — anyone who has it can use your Gemini quota.', TOAST_STICKY);
       updateSpeakerShare();
     };
     updateSpeakerShare();
@@ -424,47 +643,23 @@ function startApp() {
       document.getElementById('speaker-share-panel').classList.toggle('hidden');
     };
 
-    // Defensive: a device can hold cached index.html while loading fresh app.js, so
-    // these elements may not exist. Letting that throw here would abort the rest of
-    // renderSpeakerView — including startRecognition() below — and the resulting
-    // silence would look exactly like the recognition bug this panel exists to find.
-    try {
-      const stamp = document.getElementById('debug-build-stamp');
-      if (stamp) stamp.textContent = BUILD_STAMP;
-      const toggleBtn = document.getElementById('btn-toggle-debug');
-      if (!toggleBtn) {
-        // No Debug button in the DOM means this device is running an older index.html
-        // than app.js — say so, rather than letting it masquerade as a mic failure.
-        showToast('Stale page cached — close this tab entirely and reopen the link to get the current version.', 8000);
-      }
-      if (toggleBtn) {
-        toggleBtn.onclick = () => {
-          document.getElementById('speaker-debug-panel')?.classList.toggle('hidden');
-          const log = document.getElementById('speaker-debug-log');
-          if (log) log.textContent = debugLines.join('\n');
-        };
-      }
-      const clearBtn = document.getElementById('btn-clear-debug');
-      if (clearBtn) {
-        clearBtn.onclick = () => {
-          debugLines.length = 0;
-          const log = document.getElementById('speaker-debug-log');
-          if (log) log.textContent = '';
-        };
-      }
-      const copyBtn = document.getElementById('btn-copy-debug');
-      if (copyBtn) {
-        copyBtn.onclick = () => {
-          const text = `${BUILD_STAMP}\n${navigator.userAgent}\n\n${debugLines.join('\n')}`;
-          navigator.clipboard?.writeText(text).then(
-            () => showToast('Debug log copied.'),
-            () => showToast('Could not copy — select the text manually.')
-          );
-        };
-      }
-    } catch (err) {
-      console.error('debug panel wiring failed', err);
+    const micBtn = document.getElementById('btn-toggle-mic');
+    if (micBtn) {
+      micBtn.onclick = () => {
+        // 'error' shares the resume path deliberately: the button reads "Try again"
+        // there, and retrying is exactly starting the recognizer over again.
+        if (micState === 'paused' || micState === 'error') resumeSpeaking();
+        else pauseSpeaking();
+      };
+    } else {
+      // The status bar is part of this release's index.html, so its absence means the
+      // device is holding a cached older page against a fresh app.js. Say that plainly
+      // rather than letting it surface later as an inexplicable mic failure.
+      showToast('Stale page cached — close this tab entirely and reopen the link to get the current version.', TOAST_STICKY);
     }
+
+    isPaused = false;
+    setMicStatus('starting');
 
     debugLog(`speaker view ready — ${BUILD_STAMP}`);
     debugLog(`iOS=${IS_IOS} ctor=${getSpeechRecognitionCtor() ? 'present' : 'MISSING'}`);
@@ -505,28 +700,19 @@ function startApp() {
   function changeSpeakingLanguage(newLang) {
     flushBuffer();
     currentSourceLang = newLang;
-    // Restart unconditionally rather than only when already active. A fatal error
-    // (e.g. service-not-allowed for an unsupported locale) clears isSpeakingActive,
+    debugLog(`language changed to ${newLang}`);
+    // A deliberate pause outranks a language change: picking a language while paused
+    // sets up the next session rather than starting one.
+    if (isPaused) {
+      setMicStatus('paused');
+      return;
+    }
+    // Otherwise restart unconditionally rather than only when already active. A fatal
+    // error (e.g. service-not-allowed for an unsupported locale) clears isSpeakingActive,
     // and gating on it meant picking a different language silently did nothing —
     // exactly when retrying matters most. This also runs inside a real user gesture,
     // which is the most permissive context iOS offers for start().
-    debugLog(`language changed to ${newLang} — restarting`);
     startRecognition(newLang);
-  }
-
-  const debugLines = [];
-
-  function debugLog(message) {
-    const stamp = new Date().toISOString().slice(11, 23);
-    const line = `${stamp}  ${message}`;
-    debugLines.push(line);
-    if (debugLines.length > 200) debugLines.shift();
-    console.info('[rtt]', line);
-    const el = document.getElementById('speaker-debug-log');
-    if (el) {
-      el.textContent = debugLines.join('\n');
-      el.scrollTop = el.scrollHeight;
-    }
   }
 
   function getSpeechRecognitionCtor() {
@@ -536,7 +722,9 @@ function startApp() {
   function startRecognition(langCode) {
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) {
-      showToast('Speech recognition is not supported in this browser. Try Chrome.');
+      isSpeakingActive = false;
+      setMicStatus('error', 'This browser has no speech recognition.');
+      showToast('Speech recognition is not supported in this browser. Try Chrome, or Safari on iOS/macOS.', TOAST_STICKY);
       return;
     }
     stopRecognitionInternal();
@@ -548,6 +736,7 @@ function startApp() {
 
     recognizer.onresult = (event) => {
       armWatchdog();
+      flashSpeechCue();
       if (failedRestarts) debugLog('onresult — recovered');
       else if (!debugLines.some((l) => l.includes('onresult'))) debugLog('onresult — FIRST RESULT received');
       failedRestarts = 0; // proof the pipeline works; don't count earlier stumbles against it
@@ -572,7 +761,11 @@ function startApp() {
       debugLog(`ONERROR: ${event.error}${event.message ? ' — ' + event.message : ''}`);
       if (event.error === 'not-allowed') {
         isSpeakingActive = false;
-        showToast('Microphone access denied — check this site’s microphone permission in your browser settings.');
+        setMicStatus('error', 'Microphone permission was denied for this site.');
+        showToast(
+          'Microphone access denied — check this site’s microphone permission in your browser settings, then tap Try again.',
+          TOAST_STICKY
+        );
       } else if (event.error === 'service-not-allowed' || event.error === 'language-not-supported') {
         // Apple reports a missing locale model as service-not-allowed (see the
         // comment below), so both codes land here. If the chosen language has a
@@ -584,7 +777,7 @@ function startApp() {
           // recogniser, and they should know that without reading the debug panel.
           showToast(
             `${langName(currentSourceLang)} speech recognition isn’t available on this device, so ${langName(fallback)} is being used instead — the two are nearly identical. Your text is still sent to listeners as ${langName(currentSourceLang)}.`,
-            9000
+            TOAST_STICKY
           );
           // The failed attempt died in milliseconds; don't let it count toward the
           // give-up cap and starve the fallback of its own retries.
@@ -593,18 +786,22 @@ function startApp() {
           return;
         }
         isSpeakingActive = false;
+        setMicStatus('error', `${langName(currentSourceLang)} speech isn’t available on this device.`);
         // WebKit reports several distinct conditions through this one code (see
         // bugs.webkit.org/show_bug.cgi?id=225298): Dictation/Siri disabled system-wide,
         // running as a Home Screen web app or in an in-app browser, and — because
         // SFSpeechRecognizer(locale:) returns nil for locales Apple doesn't support —
         // an unsupported language. So name the likely causes rather than just one.
+        // Sticky: this asks the reader to leave the app and change a device setting,
+        // which they can't do if the instructions vanish while they're doing it.
         showToast(
           `Speech unavailable on this device for ${langName(currentSourceLang)}. On iPhone/iPad: enable Settings → General → Keyboard → Dictation, try another language (Apple supports fewer than Chrome — Bosnian and Serbian in particular are missing), and open the link in Safari itself rather than a Home Screen icon or in-app browser.`,
-          9000
+          TOAST_STICKY
         );
       } else if (event.error === 'audio-capture') {
         isSpeakingActive = false;
-        showToast('No microphone available — check that nothing else is using it.');
+        setMicStatus('error', 'No microphone could be opened.');
+        showToast('No microphone available — check that nothing else is using it, then tap Try again.', TOAST_STICKY);
       }
       // Remaining errors ('no-speech', 'network', 'aborted') are transient and
       // recovered by onend's restart.
@@ -622,12 +819,17 @@ function startApp() {
         if (failedRestarts >= MAX_FAILED_RESTARTS) {
           isSpeakingActive = false;
           debugLog(`GIVING UP after ${failedRestarts} immediate failed restarts`);
-          showToast('Speech recognition keeps failing to start on this device — try a different language, or Chrome on desktop.', 6000);
+          setMicStatus('error', 'Recognition kept dropping as soon as it started.');
+          showToast(
+            'Speech recognition keeps failing to start on this device — try a different language, or Chrome on desktop. Settings → Diagnostics has the full log.',
+            TOAST_STICKY
+          );
           return;
         }
       } else {
         failedRestarts = 0;
       }
+      setMicStatus('starting', 'Reconnecting to the microphone…');
       restartTimer = setTimeout(() => {
         if (isSpeakingActive) {
           try {
@@ -642,15 +844,30 @@ function startApp() {
     };
 
     // Lifecycle logging: on iOS these are often the only way to tell "never started"
-    // apart from "started but heard nothing".
-    recognizer.onstart = () => debugLog('onstart — session opened');
-    recognizer.onaudiostart = () => debugLog('onaudiostart — mic audio flowing');
-    recognizer.onspeechstart = () => debugLog('onspeechstart — speech detected');
-    recognizer.onaudioend = () => debugLog('onaudioend — mic audio stopped');
+    // apart from "started but heard nothing". They double as the status-bar's source of
+    // truth — onstart alone means the session opened, which isn't the same as audio
+    // actually reaching it, so the reassuring "Live" only lands on onaudiostart.
+    recognizer.onstart = () => {
+      debugLog('onstart — session opened');
+      setMicStatus('starting', 'Session open, waiting for mic audio…');
+    };
+    recognizer.onaudiostart = () => {
+      debugLog('onaudiostart — mic audio flowing');
+      setMicStatus('live');
+    };
+    recognizer.onspeechstart = () => {
+      debugLog('onspeechstart — speech detected');
+      flashSpeechCue();
+    };
+    recognizer.onaudioend = () => {
+      debugLog('onaudioend — mic audio stopped');
+      if (isSpeakingActive) setMicStatus('starting', 'Mic went quiet, reconnecting…');
+    };
     recognizer.onnomatch = () => debugLog('onnomatch');
 
     isSpeakingActive = true;
     failedRestarts = 0;
+    setMicStatus('starting');
     try {
       debugLog(`calling start() lang=${langCode}`);
       recognizer.start();
@@ -659,6 +876,9 @@ function startApp() {
       debugLog('start() returned without throwing');
     } catch (err) {
       debugLog(`start() THREW: ${err && err.name}: ${err && err.message}`);
+      isSpeakingActive = false;
+      setMicStatus('error', 'The browser refused to start speech recognition.');
+      showToast(`Could not start speech recognition: ${err && err.message}. Tap Try again.`, TOAST_STICKY);
     }
     acquireWakeLock();
   }
@@ -668,7 +888,7 @@ function startApp() {
     clearTimeout(watchdogTimer);
     watchdogTimer = setTimeout(() => {
       if (!isSpeakingActive || !recognizer) return;
-      console.warn('speech recognition watchdog: no results in', RECOGNITION_WATCHDOG_MS, 'ms — forcing restart');
+      debugLog(`watchdog: no results in ${RECOGNITION_WATCHDOG_MS}ms — forcing restart`);
       try {
         recognizer.stop(); // triggers onend, which already handles restarting
       } catch {
@@ -680,14 +900,20 @@ function startApp() {
   function stopRecognitionInternal() {
     clearTimeout(restartTimer);
     clearTimeout(watchdogTimer);
+    clearTimeout(speechCueTimer);
     if (recognizer) {
       const r = recognizer;
+      // Detach *every* handler, not just the ones that restart: a stray onaudioend from
+      // the session we're killing would otherwise repaint the status bar as
+      // "reconnecting" moments after the speaker deliberately paused.
       r.onend = null;
       r.onerror = null;
       r.onresult = null;
       r.onstart = null;
       r.onaudiostart = null;
       r.onspeechstart = null;
+      r.onaudioend = null;
+      r.onnomatch = null;
       try {
         r.stop();
       } catch {
