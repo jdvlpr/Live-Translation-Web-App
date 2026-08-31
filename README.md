@@ -8,12 +8,14 @@ speaker and listeners, and the Gemini API handles translation.
 ## How it works
 
 - **Lobby.** Opening the app with no `?room=` in the URL shows a lobby: **Start a new room**, plus
-  a button to rejoin the room you were in most recently and a list of up to five earlier ones
-  (tap to reopen, ✕ to forget). A room id exists nowhere but the URL, so this list is the only
-  thing that makes leaving a room reversible — the alternative is remembering to press the
-  browser's Back button. The list lives in this browser's `localStorage` only: it's your own
-  history of where you've been, not a directory of rooms, and it's never uploaded anywhere.
-  Rooms are recorded when you actually enter one as speaker or listener.
+  a single list of up to five rooms you've been in, newest first and tinted (tap to reopen, ✕ to
+  forget). A room id exists nowhere but the URL, so this list is the only thing that makes leaving
+  a room reversible — the alternative is remembering to press the browser's Back button. The list
+  lives in this browser's `localStorage` only: it's your own history of where you've been, not a
+  directory of rooms, and it's never uploaded anywhere. Rooms are recorded when you actually enter
+  one as speaker or listener. (The newest room briefly had its own separate "Rejoin" button above
+  the list. It was dropped: it led exactly where tapping the first row leads, and because the ✕
+  lived only on rows, the most recent room was the one room that could never be forgotten.)
 - **One URL, two roles.** Anyone who opens `index.html?room=abc123` sees "Start as Speaker" or
   "Join as Listener." Whoever taps "Start as Speaker" first wins the room (a Firebase transaction
   prevents two people from both becoming the speaker). If the room is already live, new visitors
@@ -34,6 +36,19 @@ speaker and listeners, and the Gemini API handles translation.
 - **Leaving a room** takes the listener back to the lobby rather than into a freshly generated
   empty room, so the room they just left is one tap away. It doesn't affect anyone else — the
   speaker and other listeners carry on.
+- **Ending a session** (the speaker's red **End session** button) is the one control that affects
+  everybody: it clears `isLive` and `speakerId`, which disconnects every listener. It takes two
+  taps — the button arms itself, reading "End for everyone?", and disarms after 5s — because it
+  sits in a crowded header within a thumb's width of the language picker. It deliberately does
+  **not** navigate anywhere; see the note under *Ending a session must not navigate* below.
+  Afterwards everyone lands on the room's chooser screen, which is also the handoff: `speakerId`
+  is now null, so the next person to tap **Start as Speaker** wins the room. There is no separate
+  "leave" for the speaker, because there is no state it could produce — `onDisconnect` clears
+  `isLive` the moment the speaker's socket drops, so a speaker walking away always ends the
+  broadcast. Two buttons would imply a difference that cannot exist.
+- **The chooser has an exit** (**← Back to my rooms**). Three paths land there — you ended your own
+  session, a speaker ended one you were listening to, or you opened a link to a room nobody has
+  started — and the listener's own Leave button belongs to a view that is hidden by then.
 - **Listener** picks their own reading language independently. If it matches the speaker's
   language, the original text is shown immediately with no API calls. Otherwise, the first
   listener to need a given translation calls the Gemini API and writes the result back to
@@ -192,9 +207,19 @@ your Gemini key travels with it).
   once the *new* `index.html` has loaded, since a cached page still points at the old `?v=`. So
   the page is the one that needs the nudge: append `&cb=N` (any changing value), then confirm the
   build stamp under **Settings → Diagnostics** matches what you just shipped before you trust a
-  test result. Every navigation *inside* the app (Leave, Start a new room, rejoining a listed
-  room) preserves whatever query parameters are already in the URL, so a `cb` you added survives
-  those hops instead of silently dropping you back onto the cached build.
+  test result. Every navigation *inside* the app (Leave, Start a new room, Back to my rooms,
+  reopening a listed room) preserves whatever query parameters are already in the URL, so a `cb`
+  you added survives those hops instead of silently dropping you back onto the cached build.
+- **Ending a session must not navigate.** `closeRoom()` writes `{isLive:false, speakerId:null}`
+  and stops. It is tempting to send the speaker to the lobby on the same tap; don't. Firebase
+  applies the write to its local cache and fires the `value` listener *before* the network write
+  flushes, and that listener runs `teardownSpeakerView()`, which cancels the `onDisconnect`
+  backstop. Unloading the page there can beat the write out the door with the safety net already
+  disarmed, leaving the room `isLive` with a speaker who is gone. Every later visitor then routes
+  straight to the listener view, so nobody ever sees the chooser and the claim transaction refuses
+  to hand the room over — the room is permanently unusable to everyone but that one browser. It
+  is network-dependent, so it would show up as an occasional unreproducible "dead room". The
+  chooser's own **← Back to my rooms** is the safe way out, one tap later.
 - **Toasts that ask you to do something stay until dismissed.** Anything instructing the reader to
   change a device setting, warning about credential exposure, or reporting an error shows a "Got
   it" button and no timer, because a timed-out toast can't be brought back. Incidental messages

@@ -47,7 +47,7 @@ const RECOGNITION_WATCHDOG_MS = 20000;
 // app.js changes in a way a tester needs to confirm reached their device. GitHub Pages +
 // iOS Safari cache aggressively enough that "did the new code actually load?" is
 // otherwise unanswerable from a phone.
-const BUILD_STAMP = 'build 2026-08-31 v7';
+const BUILD_STAMP = 'build 2026-08-31 v8';
 // A recognition session ending sooner than this without any result is treated as a
 // failure to start rather than a silence, so we stop retrying and surface the error.
 const FAILED_SESSION_MS = 1500;
@@ -468,35 +468,30 @@ function renderLobbyView() {
     location.href = urlForRoom(generateRoomId());
   };
 
-  // The most recent room gets its own button rather than being row one of a list: after
-  // tapping Leave, "go back to where I just was" is the likeliest intent, and it shouldn't
-  // require picking a code out of a list to act on.
+  // Previously rooms[0] was pulled out into its own "Rejoin <id>" button and only rooms[1..]
+  // were listed. The button and the rows led to the same place, so the split read as two
+  // controls for one action — and because the ✕ lived only on the rows, the room you were in
+  // most recently was the one room you could not forget. One list now: newest first, tinted
+  // so it still reads as "where you just were", and dismissible like every other row.
+  // Hidden rather than ignored because a device may hold a cached index.html that still has it.
   const rejoin = document.getElementById('btn-rejoin-last');
-  const last = rooms[0];
-  if (rejoin) {
-    rejoin.classList.toggle('hidden', !last);
-    if (last) {
-      rejoin.textContent = `↩ Rejoin ${last.id}`;
-      rejoin.onclick = () => {
-        location.href = urlForRoom(last.id);
-      };
-    }
-  }
+  if (rejoin) rejoin.classList.add('hidden');
 
   const wrap = document.getElementById('lobby-recent-wrap');
   const list = document.getElementById('lobby-recent-list');
-  const earlier = rooms.slice(1);
-  if (wrap) wrap.classList.toggle('hidden', earlier.length === 0);
+  if (wrap) wrap.classList.toggle('hidden', rooms.length === 0);
   if (!list) return;
   list.innerHTML = '';
 
-  for (const entry of earlier) {
+  rooms.forEach((entry, i) => {
     const row = document.createElement('li');
-    row.className = 'flex items-center gap-2';
+    // Tint only the newest. A translucent hover works over both that tint and plain white,
+    // which a fixed hover:bg-slate-50 would not.
+    row.className = 'flex items-center gap-2 rounded-lg' + (i === 0 ? ' bg-indigo-50 border border-indigo-200' : '');
 
     const open = document.createElement('button');
     open.type = 'button';
-    open.className = 'flex-1 min-w-0 text-left px-2 py-2 rounded-lg hover:bg-slate-50';
+    open.className = 'flex-1 min-w-0 text-left px-2 py-2 rounded-lg hover:bg-black/5';
     const name = document.createElement('span');
     name.className = 'block font-mono text-sm';
     name.textContent = entry.id;
@@ -524,7 +519,7 @@ function renderLobbyView() {
     row.appendChild(open);
     row.appendChild(drop);
     list.appendChild(row);
-  }
+  });
 }
 
 /* ---------- Bootstrap ---------- */
@@ -626,6 +621,17 @@ function startApp() {
       currentRoute = 'listener';
       renderListenerView();
     };
+
+    // Every route that isn't 'speaker' or 'listener' funnels here, including the two that
+    // arrive involuntarily: ending your own session, and having a speaker end one you were
+    // listening to. The listener's own Leave button is in a view that just got hidden, so
+    // without this the chooser is a screen you can only leave via the browser's Back button.
+    const leave = document.getElementById('btn-chooser-leave');
+    if (leave) {
+      leave.onclick = () => {
+        location.href = urlForRoom(null);
+      };
+    }
   }
 
   function requestMicPermission() {
@@ -858,6 +864,10 @@ function startApp() {
     debugLog(`speaker view ready — ${BUILD_STAMP}`);
     debugLog(`iOS=${IS_IOS} ctor=${getSpeechRecognitionCtor() ? 'present' : 'MISSING'}`);
 
+    // Reset here, not only in the handler: this function is re-entered on every route change
+    // back into the speaker role, and a button left reading "End for everyone?" from a
+    // previous stint would be armed to fire on the first tap of the next one.
+    resetCloseButton();
     document.getElementById('btn-close-room').onclick = closeRoom;
 
     // Re-arm the onDisconnect cleanup every time our connection (re)establishes,
@@ -875,6 +885,8 @@ function startApp() {
   }
 
   function teardownSpeakerView() {
+    clearTimeout(closeArmTimer); // no stray disarm firing against a view that's gone
+    closeArmed = false;
     connectedRef.off('value', handleConnectedChange);
     // Cancel our onDisconnect registration whenever we leave the speaker role for any
     // reason (not just an explicit close) — otherwise it can outlive us and fire later
@@ -886,8 +898,44 @@ function startApp() {
     stopRecognition();
   }
 
+  // Ending a session is the only speaker action other people feel — every listener is
+  // disconnected — and its button sits in a crowded header a thumb's width from the language
+  // picker. So it asks once. Inline rather than confirm(), which on iOS is a modal that
+  // blocks the page (and the recognizer) until someone dismisses it.
+  let closeArmed = false;
+  let closeArmTimer = null;
+
+  // Rewrites the classes rather than toggling one, so the armed state can't be left behind
+  // by a partial reset. Keep in step with the markup for #btn-close-room in index.html.
+  function resetCloseButton() {
+    closeArmed = false;
+    clearTimeout(closeArmTimer);
+    const btn = document.getElementById('btn-close-room');
+    if (!btn) return;
+    btn.textContent = 'End session';
+    btn.className = 'px-3 py-1.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700';
+  }
+
   function closeRoom() {
+    if (!closeArmed) {
+      closeArmed = true;
+      const btn = document.getElementById('btn-close-room');
+      if (btn) {
+        btn.textContent = 'End for everyone?';
+        btn.className = 'px-3 py-1.5 rounded-lg bg-red-700 text-white text-sm font-bold ring-2 ring-red-300';
+      }
+      // Disarms itself, so a header caught by accident doesn't sit in a half-pressed state
+      // for the rest of the session waiting to fire on the next stray tap.
+      closeArmTimer = setTimeout(resetCloseButton, 5000);
+      return;
+    }
+    resetCloseButton();
     flushBuffer(); // send any trailing sentence while the room is still marked live
+    // Deliberately does not navigate. The local 'value' listener fires first and runs
+    // teardownSpeakerView, which cancels the onDisconnect backstop; unloading the page here
+    // could then beat the network write and strand the room isLive with an absent speaker —
+    // a state that routes every later arrival to the listener view and makes the room
+    // unclaimable. Ending drops to the chooser, which now has its own way out.
     stateRef.set({ isLive: false, speakerId: null });
   }
 

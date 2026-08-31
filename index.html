@@ -53,16 +53,17 @@
             <p class="text-slate-600 max-w-sm">Start a room to speak in, or rejoin one you were in.</p>
           </div>
 
-          <div class="flex flex-col sm:flex-row gap-4 w-full max-w-md">
-            <button id="btn-new-room" class="flex-1 px-6 py-4 rounded-xl bg-indigo-600 text-white font-semibold text-lg shadow hover:bg-indigo-700">
-              ✨ Start a new room
-            </button>
-            <!-- Label is written from app.js so it can name the actual room. -->
-            <button id="btn-rejoin-last" class="hidden flex-1 px-6 py-4 rounded-xl bg-white border-2 border-indigo-600 text-indigo-600 font-semibold text-lg hover:bg-indigo-50"></button>
-          </div>
+          <button id="btn-new-room" class="w-full max-w-md px-6 py-4 rounded-xl bg-indigo-600 text-white font-semibold text-lg shadow hover:bg-indigo-700">
+            ✨ Start a new room
+          </button>
 
+          <!-- One uniform list, rather than the "Rejoin (room id)" button that used to sit above
+               it holding the newest room. Both did the same thing on tap, but only the list rows
+               carried a ✕ — so the most recently visited room, the likeliest one to be a typo
+               or a one-off worth clearing, was the single room that could never be forgotten.
+               Rows are built in app.js, newest first and visually emphasised there. -->
           <div id="lobby-recent-wrap" class="hidden w-full max-w-md bg-white border border-slate-200 rounded-xl p-4">
-            <p class="text-sm text-slate-500 mb-2">Earlier rooms</p>
+            <p class="text-sm text-slate-500 mb-2">Rooms you've been in</p>
             <ul id="lobby-recent-list" class="flex flex-col gap-1"></ul>
           </div>
         </div>
@@ -100,6 +101,12 @@
               <span>Include my Firebase/Gemini credentials in this link &amp; QR, so people who open it don't need to enter Settings. Only do this with a QR you control who sees.</span>
             </label>
           </div>
+
+          <!-- The way off this screen. Three separate paths land here — you ended your own
+               session, a speaker ended one you were listening to, or you opened a link to a
+               room nobody has started yet — and until now all three arrived at a view whose
+               only controls were "start" and "join". Leaving meant knowing to press Back. -->
+          <button id="btn-chooser-leave" class="text-sm text-slate-500 hover:text-slate-700 underline">← Back to my rooms</button>
         </div>
       </section>
 
@@ -111,7 +118,10 @@
             </label>
             <div class="flex-1"></div>
             <button id="btn-toggle-share" class="text-sm text-indigo-600 hover:underline">Share link</button>
-            <button id="btn-close-room" class="px-3 py-1.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700">Close Room</button>
+            <!-- "Close Room" said what it did to the room, not what it does to people: every
+                 listener is disconnected. The label and the two-tap arming both live in
+                 app.js (resetCloseButton), so keep these classes in step with it. -->
+            <button id="btn-close-room" title="Ends the session and disconnects everyone listening" class="px-3 py-1.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700">End session</button>
           </div>
 
           <!-- Mic state, front and centre. A speaker mid-talk needs to know at a glance
@@ -229,6 +239,6 @@
   <!-- Version query bumped alongside BUILD_STAMP in app.js. GitHub Pages and iOS
        Safari cache app.js independently of this page, so a fresh index.html would
        otherwise still pull a stale script. -->
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>
