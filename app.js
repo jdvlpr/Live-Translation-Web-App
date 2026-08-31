@@ -135,6 +135,10 @@ const TOAST_STICKY = 0;
 const TOAST_MS = 6000;
 // Older messages are dropped past this, so a burst can't cover the whole screen.
 const MAX_TOASTS = 4;
+// Dismiss-required toasts are wordy and sit there until tapped, so allow fewer at once
+// than timed ones: three stacked instruction blocks would bury the caption area on a
+// phone and demand three separate taps to clear.
+const MAX_STICKY_TOASTS = 2;
 
 function showToast(msg, ms = TOAST_MS) {
   const stack = document.getElementById('toast-stack');
@@ -183,9 +187,14 @@ function showToast(msg, ms = TOAST_MS) {
   toast.appendChild(dismiss);
 
   // Make room *before* appending, so the incoming toast can never be chosen as its own
-  // victim. Oldest goes first, but timed toasts are sacrificed ahead of sticky ones — a
-  // message the reader was told to act on shouldn't be evicted by a "Link copied."
-  // arriving behind it. Only when the whole stack is sticky does the oldest sticky go.
+  // victim. Stickies are capped separately and against each other, oldest out first.
+  if (sticky) {
+    const stickies = [...stack.children].filter((t) => t.dataset.sticky);
+    while (stickies.length >= MAX_STICKY_TOASTS) stickies.shift().remove();
+  }
+  // Then the overall cap. Timed toasts are sacrificed ahead of sticky ones — a message
+  // the reader was told to act on shouldn't be evicted by a "Link copied." arriving
+  // behind it. Only when the whole stack is sticky does the oldest sticky go.
   while (stack.children.length >= MAX_TOASTS) {
     const victim = [...stack.children].find((t) => !t.dataset.sticky) || stack.firstElementChild;
     clearTimeout(Number(victim.dataset.timer));
@@ -349,7 +358,7 @@ document.addEventListener('click', (e) => {
     .then(() => showToast('Link copied.'))
     .catch(() => {
       input.select();
-      showToast('Press Ctrl/Cmd+C to copy.', TOAST_STICKY);
+      showToast('Press Ctrl/Cmd+C to copy.', 8000);
     });
 });
 
@@ -447,7 +456,7 @@ function startApp() {
       renderQr('chooser-qrcode', url);
     };
     includeCreds.onchange = () => {
-      if (includeCreds.checked) showToast('This link/QR carries your credentials — anyone who has it can use your Gemini quota.', TOAST_STICKY);
+      if (includeCreds.checked) showToast('This link/QR carries your credentials — anyone who has it can use your Gemini quota.', 10000);
       updateChooserShare();
     };
     updateChooserShare();
@@ -522,6 +531,17 @@ function startApp() {
   let isPaused = false;
   let micState = 'starting'; // key into MIC_STATUS below
   let speechCueTimer = null;
+  let demoteTimer = null;
+
+  // iOS Safari only half-honours `continuous`: sessions end and restart constantly — every
+  // breath between sentences, plus every watchdog tick — and each cycle runs
+  // onaudioend → onend → start() → onaudiostart within a few hundred milliseconds. Painting
+  // the bar grey on each of those would strobe it between "Live" and "Reconnecting" all
+  // through a talk, which reads as broken on exactly the platform this bar exists to
+  // reassure. So dropping *out* of Live is deferred by this much: a healthy restart
+  // completes well inside the window and the bar never moves, while a genuine stall still
+  // surfaces. Errors and the give-up cap keep painting immediately — nothing honest is lost.
+  const MIC_DEMOTE_GRACE_MS = 2000;
 
   // Drives the status bar. `className` is assigned wholesale per state rather than
   // toggled, so no colour from a previous state can survive into the next one.
@@ -563,6 +583,7 @@ function startApp() {
   function setMicStatus(state, detailOverride) {
     micState = state;
     clearTimeout(speechCueTimer);
+    clearTimeout(demoteTimer);
     const s = MIC_STATUS[state];
     const bar = document.getElementById('speaker-status-bar');
     if (!bar || !s) return;
@@ -573,6 +594,16 @@ function startApp() {
     const btn = document.getElementById('btn-toggle-mic');
     btn.className = `shrink-0 px-4 py-2 rounded-lg text-sm font-semibold ${s.btnClass}`;
     btn.textContent = s.button;
+  }
+
+  // Deferred drop out of "Live" — see MIC_DEMOTE_GRACE_MS. Only Live is demoted:
+  // 'starting' is already grey, and 'paused'/'error' are states we were put in on purpose.
+  function scheduleMicDemotion(detail) {
+    if (micState !== 'live') return;
+    clearTimeout(demoteTimer);
+    demoteTimer = setTimeout(() => {
+      if (micState === 'live') setMicStatus('starting', detail);
+    }, MIC_DEMOTE_GRACE_MS);
   }
 
   // Momentary "we are hearing audio right now" feedback. The pulsing dot only proves the
@@ -586,6 +617,8 @@ function startApp() {
     // 'starting' is promoted: 'paused' and 'error' are deliberate states to stay in.
     if (micState === 'starting') setMicStatus('live');
     if (micState !== 'live') return;
+    // Audio is demonstrably arriving, so cancel any pending drop out of Live.
+    clearTimeout(demoteTimer);
     const detail = document.getElementById('speaker-status-detail');
     if (!detail) return;
     detail.textContent = 'Hearing you…';
@@ -635,7 +668,7 @@ function startApp() {
       renderQr('speaker-qrcode', url);
     };
     speakerIncludeCreds.onchange = () => {
-      if (speakerIncludeCreds.checked) showToast('This link/QR carries your credentials — anyone who has it can use your Gemini quota.', TOAST_STICKY);
+      if (speakerIncludeCreds.checked) showToast('This link/QR carries your credentials — anyone who has it can use your Gemini quota.', 10000);
       updateSpeakerShare();
     };
     updateSpeakerShare();
@@ -829,7 +862,7 @@ function startApp() {
       } else {
         failedRestarts = 0;
       }
-      setMicStatus('starting', 'Reconnecting to the microphone…');
+      scheduleMicDemotion('Reconnecting to the microphone…');
       restartTimer = setTimeout(() => {
         if (isSpeakingActive) {
           try {
@@ -849,7 +882,9 @@ function startApp() {
     // actually reaching it, so the reassuring "Live" only lands on onaudiostart.
     recognizer.onstart = () => {
       debugLog('onstart — session opened');
-      setMicStatus('starting', 'Session open, waiting for mic audio…');
+      // Silent when already live: this fires on every restart cycle, and repainting here
+      // would strobe the bar exactly as onaudioend would (see MIC_DEMOTE_GRACE_MS).
+      if (micState !== 'live') setMicStatus('starting', 'Session open, waiting for mic audio…');
     };
     recognizer.onaudiostart = () => {
       debugLog('onaudiostart — mic audio flowing');
@@ -861,7 +896,7 @@ function startApp() {
     };
     recognizer.onaudioend = () => {
       debugLog('onaudioend — mic audio stopped');
-      if (isSpeakingActive) setMicStatus('starting', 'Mic went quiet, reconnecting…');
+      if (isSpeakingActive) scheduleMicDemotion('Mic went quiet, reconnecting…');
     };
     recognizer.onnomatch = () => debugLog('onnomatch');
 
@@ -901,6 +936,7 @@ function startApp() {
     clearTimeout(restartTimer);
     clearTimeout(watchdogTimer);
     clearTimeout(speechCueTimer);
+    clearTimeout(demoteTimer);
     if (recognizer) {
       const r = recognizer;
       // Detach *every* handler, not just the ones that restart: a stray onaudioend from
