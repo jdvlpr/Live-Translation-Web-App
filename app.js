@@ -52,7 +52,7 @@ const RECOGNITION_WATCHDOG_MS = 20000;
 // app.js changes in a way a tester needs to confirm reached their device. GitHub Pages +
 // iOS Safari cache aggressively enough that "did the new code actually load?" is
 // otherwise unanswerable from a phone.
-const BUILD_STAMP = 'build 2026-08-31 v9';
+const BUILD_STAMP = 'build 2026-08-31 v10';
 // A recognition session ending sooner than this without any result is treated as a
 // failure to start rather than a silence, so we stop retrying and surface the error.
 const FAILED_SESSION_MS = 1500;
@@ -1323,7 +1323,7 @@ function startApp() {
     containerId: 'listener-feed',
     toggleId: 'listener-display-toggle',
     storageKey: STORAGE.listenerMode,
-    defaultMode: 'translated',
+    defaultMode: 'dual',
     eager: true,
     showMeta: true,
     wrapClass: 'bg-white border border-slate-200 rounded-lg px-3 py-2',
@@ -1339,7 +1339,7 @@ function startApp() {
     storageKey: STORAGE.speakerMode,
     // The speaker's first use for this pane is confirming their own words were heard
     // correctly, so it opens showing what was actually recognised.
-    defaultMode: 'original',
+    defaultMode: 'dual',
     eager: false,
     // No timestamp row. The speaker is watching their own words appear live, and on a phone
     // that row costs a line of height per utterance in the one pane they read while talking.
