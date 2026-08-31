@@ -177,8 +177,12 @@ async function main() {
     t.g('btn-close-room').onclick(); // arms
     t.g('btn-close-room').onclick(); // ends the session
     // closeRoom() only writes; the teardown happens when the resulting state change routes
-    // us off the speaker view. Firebase would fire that from its local cache before the
-    // write reached the network, so drive it here rather than asserting on the write alone.
+    // us off the speaker view, so drive that here rather than asserting on the write alone.
+    //
+    // Note what this does NOT cover. Real Firebase fires this handler from its local cache
+    // *before* the network write flushes, and that ordering is the entire reason closeRoom()
+    // must not navigate. Here the handler is called after set() returns, in the order this
+    // test chose. Simulating the race would only be testing the fake; it needs a device.
     const stateHandler = t.calls.on.find((c) => c.path.endsWith('/state') && c.ev === 'value');
     check('the router is watching room state', !!stateHandler);
     stateHandler.handler({ val: () => ({ isLive: false, speakerId: null }) });
@@ -231,7 +235,33 @@ async function main() {
     check('entries collapse to a single column', hidden(originalCol(entries(captions)[0])) && !hidden(translatedCol(entries(captions)[0])));
   }
 
-  console.log('\n13. the listener still defaults to Translated and translates eagerly');
+  console.log('\n13. changing the spoken language re-decides the hint, not the old lines');
+  {
+    // The subtle case: "same language" is a property of each line (what it was spoken in vs
+    // what you asked to read), while the hint is a property of right now. A speaker who
+    // switches languages mid-session has both on screen at once, and the two must not
+    // contradict each other.
+    const t = boot();
+    await wait(0);
+    t.say('Dobar dan.'); // spoken in the default bs-BA
+    const sel = t.g('speaker-target-lang-select');
+    sel.value = 'bs-BA';
+    sel.onchange();
+    const captions = t.g('speaker-captions');
+    check('showing the spoken language raises the hint', !hidden(t.g('speaker-samelang-hint')));
+    check('and collapses that line to one column', hidden(originalCol(entries(captions)[0])));
+
+    const langSel = t.g('speaker-lang-select');
+    langSel.value = 'hr-HR';
+    langSel.onchange();
+    t.say('Dobar dan opet.');
+    check('switching spoken language drops the hint', hidden(t.g('speaker-samelang-hint')));
+    check('the earlier line stays collapsed — it really was same-language', hidden(originalCol(entries(captions)[0])));
+    check('the new line shows the column the current mode asks for', !hidden(originalCol(entries(captions)[1])) && hidden(translatedCol(entries(captions)[1])));
+    check('and Original mode still translates nothing', t.translationCalls().length === 0, JSON.stringify(t.translationCalls().map((c) => c.path)));
+  }
+
+  console.log('\n14. the listener still defaults to Translated and translates eagerly');
   {
     const t = boot({ speakerId: 'someone-else' });
     await wait(0);

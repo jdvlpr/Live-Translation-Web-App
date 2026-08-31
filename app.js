@@ -1417,11 +1417,13 @@ function startApp() {
   // Re-renders from feed.segments against the current targetLang. No network and no
   // subscription, so it cannot duplicate or reorder anything that arrives while it runs.
   function rebuildFeed(feed) {
+    // Unconditionally, and before the guard below: releasing this feed's listeners is the
+    // half of this function that must never be skipped.
+    detachFeedTranslations(feed);
     // Nothing rendered yet means nothing to re-render, and returning here leaves whatever
     // empty-state message the pane is showing in place instead of blanking it.
     if (feed.segments.length === 0) return;
     const segments = feed.segments;
-    detachFeedTranslations(feed);
     resetFeed(feed);
     for (const { key, data } of segments) addFeedEntry(feed, key, data);
   }
